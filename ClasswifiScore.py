@@ -127,50 +127,87 @@ def round_columns(df,numeric_columns = None, decimal_places=4):
     return df 
 
 class wifiScore():
-    global hdfs_pd, station_history_path,device_groups_path,device_ids
+    global hdfs_pd, device_groups_path, device_ids
     hdfs_pd = "hdfs://njbbvmaspd11.nss.vzwnet.com:9000/"
-    station_history_path = hdfs_pd + "/usr/apps/vmas/sha_data/bhrx_hourly_data/StationHistory/{}"
+    #station_history_path = hdfs_pd + "/usr/apps/vmas/sha_data/bhrx_hourly_data/StationHistory/{}"
     device_groups_path = hdfs_pd + "/usr/apps/vmas/sha_data/bhrx_hourly_data/DeviceGroups/"
     serial_mdn_custid = "/usr/apps/vmas/5g_data/fixed_5g_router_mac_sn_mapping/{}/fixed_5g_router_mac_sn_mapping.csv"
-    device_ids = ["rowkey","rk_row_sn","serial_num","station_mac","parent_id"]
-
+    device_ids = ["rowkey","rk_row_sn","serial_num","station_mac"]
+    
     def __init__(self, 
                 sparksession,
-                date
+                day,
+                station_history_path
             ) -> None:
         self.spark = sparksession
-        self.date_str1 = date.strftime("%Y%m%d") # e.g. 20231223
-        self.date_str2 = date.strftime("%Y-%m-%d") # e.g. 2023-12-23
-        self.station_history_path = station_history_path.format( self.date_str1 )
+        self.date_str1 = day.strftime("%Y%m%d") # e.g. 20231223
+        self.date_str2 = day.strftime("%Y-%m-%d") # e.g. 2023-12-23
+        self.station_history_path = station_history_path
+        """
+        try:
+            self.df_stationHist = self.spark.read.parquet( self.station_history_path )
+        except:
+            self.df_stationHist = self.spark.read.option("header", "true").csv(self.station_history_path)
+        """
 
         self.df_stationHist = self.spark.read.parquet( self.station_history_path )\
-                                        .transform(flatten_df_v2)\
-                                        .transform(SH_process)\
-                                        .transform(get_Home)
-                                    
-        self.df_filter = self.filter_outlier()
+                            .transform(flatten_df_v2)\
+                            .transform(SH_process)\
+                            .transform(get_Home)
+
+        self.stationarity = self.filter_outlier()
+        self.parent_id = self.df_stationHist.select( device_ids + ["parent_id"]).distinct()
+
         self.df_rssi = self.get_rssi_dataframe()
         self.df_phy = self.get_phyrate_dataframe()
-        self.df_phy_rssi = self.df_phy.drop('poor_count', 'total_count')\
+        self.df_phy_weights = self.apply_weights()
+        self.df_phy_rssi = self.df_phy_weights.drop('poor_count', 'total_count')\
                                     .join( self.df_rssi.drop('count_cat1', 'count_cat2', 'count_cat3', 'total_count'), 
                                             device_ids)
-        self.df_mac = self.add_info()
-        self.df_deviceScore = self.df_mac.withColumn( 
-                                                    "device_score", 
-                                                    (100 - col("poor_rssi")) * 0.4 + (100 - col("poor_phyrate")) * 0.6 
-                                                )\
-                                        .drop("dg_rowkey")
-        self.df_homeScore = (
-                self.df_deviceScore.groupby("serial_num","mdn","cust_id","Rou_Ext")
-                                .agg(
-                                    sum(col("poor_rssi")*col("weights")).alias("poor_rssi"),\
-                                    sum(col("poor_phyrate")*col("weights")).alias("poor_phyrate"),\
-                                    sum(col("device_score")*col("weights")).alias("home_score"),\
-                                    max("firmware").alias("firmware")
-                                )
+        self.df_all_features = self.add_info()
+        self.df_deviceScore = self.df_all_features.withColumn( 
+                                            "device_score", 
+                                            (100 - col("poor_rssi")) * 0.4 + (100 - col("poor_phyrate")) * 0.6 
+                                        )\
+                                .drop("dg_rowkey")
+        self.df_homeScore = self.df_deviceScore .groupBy("serial_num", "mdn", "cust_id")\
+                            .agg( 
+                                F.round(F.sum(col("poor_rssi") * col("weights")), 4).alias("poor_rssi"), 
+                                F.round(F.sum(col("poor_phyrate") * col("weights")), 4).alias("poor_phyrate"), 
+                                F.round(F.sum(col("device_score") * col("weights")), 4).alias("home_score") 
+                            )
 
-                )
+    def filter_outlier(self, df = None, partition_columns = None, percentiles = None, column_name = None):
+        if df is None:
+            df = self.df_stationHist 
+        if partition_columns is None:
+            partition_columns = ["rowkey","rk_row_sn","station_mac","serial_num"]
+        if percentiles is None:
+            percentiles = [0.03, 0.1, 0.5, 0.9]
+        if column_name is None:
+            column_name = "sdcd_signal_strength"
+
+        window_spec = Window().partitionBy(partition_columns) 
         
+        three_percentile = F.expr(f'percentile_approx({column_name}, {percentiles[0]})') 
+        ten_percentile = F.expr(f'percentile_approx({column_name}, {percentiles[1]})') 
+        med_percentile = F.expr(f'percentile_approx({column_name}, {percentiles[2]})') 
+        ninety_percentile = F.expr(f'percentile_approx({column_name}, {percentiles[3]})') 
+
+        df_outlier = df.withColumn('3%_val', three_percentile.over(window_spec))\
+                .withColumn('10%_val', ten_percentile.over(window_spec))\
+                .withColumn('50%_val', med_percentile.over(window_spec))\
+                .withColumn('90%_val', ninety_percentile.over(window_spec))\
+                .withColumn("lower_bound", col('10%_val')-2*(  col('90%_val') - col('10%_val') ) )\
+                .withColumn("outlier", when( col("lower_bound") < col("3%_val"), col("lower_bound")).otherwise( col("3%_val") ))\
+                .filter(col(column_name) > col("outlier"))
+
+        df_stationary = df_outlier.withColumn("diff", col('90%_val') - col('50%_val') )\
+                        .withColumn("stationarity", when( col("diff")<= 5, lit("1")).otherwise( lit("0") ))\
+                        .groupby(["rowkey","rk_row_sn","serial_num","station_mac"]).agg(max("stationarity").alias("stationarity"))
+
+        return df_stationary
+
     def get_rssi_dataframe(self, df_stationHist = None):
         
         if df_stationHist is None:
@@ -184,7 +221,7 @@ class wifiScore():
         condition_cat3 = (col("sdcd_connect_type") == "6G") & (col("sdcd_signal_strength") < -70) 
     
         df_rssi = ( 
-                df_sdcd.groupBy(device_ids) 
+                df_sdcd.groupBy(device_ids ) 
                 .agg( 
                     sum(when(condition_cat1, 1).otherwise(0)).alias("count_cat1"), 
                     sum(when(condition_cat2, 1).otherwise(0)).alias("count_cat2"), 
@@ -211,41 +248,48 @@ class wifiScore():
                                 sum(when(condition, 1).otherwise(0)).alias("poor_count"), 
                                 count("*").alias("total_count")
                                 )\
-                            .withColumn("poor_phyrate", col("poor_count")/col("total_count")*100 )\
-                            .withColumn( 
-                                        "pre_norm_weights" ,
-                                        when( col('avg_phyrate')>= 20.718, 1)
-                                        .otherwise(col('avg_phyrate')/20.718) 
-                                        )\
-                            .withColumn( 
-                                        "weights", 
-                                        F.col("pre_norm_weights")*100 / F.sum("pre_norm_weights").over(window_spec) 
-                                        )\
-                            .drop("pre_norm_weights")
+                            .withColumn("poor_phyrate", col("poor_count")/col("total_count")*100 )
+        return df_phy
         
-        df_phy = round_columns(df_phy, 
+    def apply_weights(self, df = None):
+        if df is None:
+            df = self.df_phy.join( self.stationarity, ["rowkey","rk_row_sn","serial_num","station_mac"], "inner")
+            
+        df = df.withColumn("label", F.when( (col("avg_phyrate") <= 20.718)&(col("stationarity") == 1), 
+                                                col("avg_phyrate")/20.718)\
+                                            .otherwise(1)) 
+        
+        window_spec = Window.partitionBy("serial_num") 
+        df = df.withColumn("sum_label", F.sum("label").over(window_spec)) 
+        df = df.withColumn("weights", F.col("label") / F.col("sum_label"))\
+                .drop("label","sum_label")
+
+        df = round_columns(df, 
                                 numeric_columns = ["avg_phyrate","poor_phyrate","weights"], 
                                 decimal_places = 4
                             )
-        return df_phy
-        
+        return df
+    
     def add_info(self, df_phy_rssi = None, date_str1 = None, date_str2 = None):
         if df_phy_rssi is None:
-            df_phy_rssi = self.df_phy_rssi
+            df_phy_rssi = self.df_phy_rssi.join( self.parent_id, device_ids )
         if date_str1 is None:
             date_str1 = self.date_str1
         if date_str2 is None:
             date_str2 = self.date_str2
-            
-        p = hdfs_pd +"/usr/apps/vmas/5g_data/fixed_5g_router_mac_sn_mapping/{}/fixed_5g_router_mac_sn_mapping.csv"
-        d = ( datetime.strptime(date_str2,"%Y-%m-%d") - timedelta(1) ).strftime("%Y-%m-%d")
         
-        df_join = self.spark.read.option("header","true").csv(p.format(d))\
+        # add mdn and cust_id
+        d = ( datetime.strptime(date_str2,"%Y-%m-%d") ).strftime("%Y-%m-%d")
+        p = hdfs_pd +"/usr/apps/vmas/5g_data/fixed_5g_router_mac_sn_mapping/{}/fixed_5g_router_mac_sn_mapping.csv".format(d)
+        
+        df_join = self.spark.read.option("header","true").csv(p)\
                     .select( col("mdn_5g").alias("mdn"),
                             col("serialnumber").alias("serial_num"),
                             "cust_id"
                             )
-        df_all = df_join.join( df_phy_rssi, "serial_num" )
+        df_all = df_join.join( df_phy_rssi, "serial_num", "right" )
+        
+        # add device group information and Router/Extender
         device_groups_path1 = device_groups_path + date_str1
         dfdg = self.spark.read.parquet(device_groups_path1)\
                                 .select("rowkey",explode("Group_Data_sys_info"))\
@@ -254,38 +298,19 @@ class wifiScore():
         cond = [dfdg.dg_rowkey==df_all.rk_row_sn, dfdg.RouExt_mac==df_all.parent_id]
         df_mac =  dfdg.join(df_all,cond,"right")\
                         .withColumn("Rou_Ext",when( col("parent_mac").isNotNull(),1 ).otherwise(0) )
-        return df_mac
-
-    def filter_outlier(self, df = None, partition_columns = None, percentiles = None, column_name = None):
-        if df is None:
-            df = self.df_stationHist 
-        if partition_columns is None:
-            partition_columns =  device_ids
-            #partition_columns = ["rowkey","rk_row_sn","station_mac","serial_num"]
-        if percentiles is None:
-            percentiles = [0.03, 0.1, 0.5, 0.9]
-        if column_name is None:
-            percentiles = "sdcd_signal_strength"
-
-        window_spec = Window().partitionBy(partition_columns) 
+    
+        group_id = ["dg_rowkey", "serial_num", "mdn", "cust_id", "rowkey", "rk_row_sn", "station_mac"] 
+        rou_ext = ["RouExt_mac", "dg_model", "parent_mac", "firmware", "parent_id", "Rou_Ext"] 
+        features = ["avg_phyrate", "poor_phyrate", "stationarity", "weights", "poor_rssi"] 
         
-        three_percentile = F.expr(f'percentile_approx({column_name}, {percentiles[0]})') 
-        ten_percentile = F.expr(f'percentile_approx({column_name}, {percentiles[1]})') 
-        med_percentile = F.expr(f'percentile_approx({column_name}, {percentiles[2]})') 
-        ninety_percentile = F.expr(f'percentile_approx({column_name}, {percentiles[3]})') 
+        aggregation_exprs = [F.avg(col(feature)).alias(feature) for feature in features] + \
+                            [F.collect_set(col(col_name)).alias(col_name) for col_name in rou_ext]
+        
+        result_df = df_mac.groupBy(group_id).agg(*aggregation_exprs) 
+        
+        return result_df
+            
 
-        df_outlier = df.withColumn('3%_val', three_percentile.over(window_spec))\
-                .withColumn('10%_val', ten_percentile.over(window_spec))\
-                .withColumn('50%_val', med_percentile.over(window_spec))\
-                .withColumn('90%_val', ninety_percentile.over(window_spec))\
-                .withColumn("lower_bound", col('10%_val')-2*(  col('90%_val') - col('10%_val') ) )\
-                .withColumn("outlier", when( col("lower_bound") < col("3%_val"), col("lower_bound")).otherwise( col("3%_val") ))\
-                .filter(col(column_name) > col("outlier"))
-
-        df_stationary = df_outlier.withColumn("diff", col('90%_val') - col('50%_val') )\
-                        .withColumn("stationarity", when( col("diff")<= 5, lit("1")).otherwise( lit("0") ))\
-                        .drop("3%_val","10%_val","50%_val","90%_val","outlier","lower_bound","diff")
-        return df_stationary
         
 if __name__ == "__main__":
     
@@ -296,19 +321,26 @@ if __name__ == "__main__":
             .enableHiveSupport().getOrCreate()
     #
     hdfs_pd = "hdfs://njbbvmaspd11.nss.vzwnet.com:9000/"
-    datetoday = date.today() - timedelta(1)
+    datetoday = date.today()
 
-    ins1 = wifiScore(  spark, datetoday)
+    ins1 = wifiScore(  
+                    sparksession = spark,
+                    day = datetoday,
+                    station_history_path = hdfs_pd + "/usr/apps/vmas/sha_data/bhrx_hourly_data/StationHistory/20240104"
+                    )
 
     df_deviceScore = ins1.df_deviceScore
     df_deviceScore = round_columns(df_deviceScore,["avg_phyrate","poor_phyrate","poor_rssi","device_score"], 2)
     df_deviceScore = round_columns(df_deviceScore,["weights"], 4)
 
-    df_deviceScore.filter( col("Rou_Ext")==1 )\
-            .repartition(1)\
+    df_deviceScore.repartition(100)\
             .write.mode("overwrite")\
             .parquet( hdfs_pd + "/user/ZheS/wifi_score_v2/deviceScore_dataframe/" + datetoday.strftime("%Y-%m-%d") )
-    
+
+    ins1.df_deviceScore
+    """
+
+    """
     #df_homeScore = ins1.df_homeScore
     #df_homeScore = round_columns(df_homeScore,["poor_phyrate","poor_rssi","home_score"], 2)
     
