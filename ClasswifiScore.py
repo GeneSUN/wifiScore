@@ -139,8 +139,8 @@ class wifiScore():
                 date
             ) -> None:
         self.spark = sparksession
-        self.date_str1 = date.strftime("%Y%m%d") # ex. 20231223
-        self.date_str2 = date.strftime("%Y-%m-%d") # ex. 2023-12-23
+        self.date_str1 = date.strftime("%Y%m%d") # e.g. 20231223
+        self.date_str2 = date.strftime("%Y-%m-%d") # e.g. 2023-12-23
         self.station_history_path = station_history_path.format( self.date_str1 )
 
         self.df_stationHist = self.spark.read.parquet( self.station_history_path )\
@@ -222,6 +222,7 @@ class wifiScore():
                                         F.col("pre_norm_weights")*100 / F.sum("pre_norm_weights").over(window_spec) 
                                         )\
                             .drop("pre_norm_weights")
+        
         df_phy = round_columns(df_phy, 
                                 numeric_columns = ["avg_phyrate","poor_phyrate","weights"], 
                                 decimal_places = 4
@@ -229,7 +230,6 @@ class wifiScore():
         return df_phy
         
     def add_info(self, df_phy_rssi = None, date_str1 = None, date_str2 = None):
-
         if df_phy_rssi is None:
             df_phy_rssi = self.df_phy_rssi
         if date_str1 is None:
@@ -246,13 +246,11 @@ class wifiScore():
                             "cust_id"
                             )
         df_all = df_join.join( df_phy_rssi, "serial_num" )
-
-        device_groups_path1 = hdfs_pd + "/usr/apps/vmas/sha_data/bhrx_hourly_data/DeviceGroups/20231227"
+        device_groups_path1 = device_groups_path + date_str1
         dfdg = self.spark.read.parquet(device_groups_path1)\
                                 .select("rowkey",explode("Group_Data_sys_info"))\
                                 .transform(flatten_df_v2)\
                                 .transform(DG_process)
-        
         cond = [dfdg.dg_rowkey==df_all.rk_row_sn, dfdg.RouExt_mac==df_all.parent_id]
         df_mac =  dfdg.join(df_all,cond,"right")\
                         .withColumn("Rou_Ext",when( col("parent_mac").isNotNull(),1 ).otherwise(0) )
