@@ -127,30 +127,22 @@ def round_columns(df,numeric_columns = None, decimal_places=4):
     return df 
 
 class wifiScore():
-    global hdfs_pd, device_groups_path, device_ids
+    global hdfs_pd, station_history_path, device_groups_path, device_ids
     hdfs_pd = "hdfs://njbbvmaspd11.nss.vzwnet.com:9000/"
-    #station_history_path = hdfs_pd + "/usr/apps/vmas/sha_data/bhrx_hourly_data/StationHistory/{}"
+    station_history_path = hdfs_pd + "/usr/apps/vmas/sha_data/bhrx_hourly_data/StationHistory/"
     device_groups_path = hdfs_pd + "/usr/apps/vmas/sha_data/bhrx_hourly_data/DeviceGroups/"
     serial_mdn_custid = "/usr/apps/vmas/5g_data/fixed_5g_router_mac_sn_mapping/{}/fixed_5g_router_mac_sn_mapping.csv"
     device_ids = ["rowkey","rk_row_sn","serial_num","station_mac"]
     
     def __init__(self, 
                 sparksession,
-                day,
-                station_history_path
+                day
             ) -> None:
         self.spark = sparksession
         self.date_str1 = day.strftime("%Y%m%d") # e.g. 20231223
         self.date_str2 = day.strftime("%Y-%m-%d") # e.g. 2023-12-23
-        self.station_history_path = station_history_path
-        """
-        try:
-            self.df_stationHist = self.spark.read.parquet( self.station_history_path )
-        except:
-            self.df_stationHist = self.spark.read.option("header", "true").csv(self.station_history_path)
-        """
 
-        self.df_stationHist = self.spark.read.parquet( self.station_history_path )\
+        self.df_stationHist = self.spark.read.parquet( station_history_path + self.date_str1 )\
                             .transform(flatten_df_v2)\
                             .transform(SH_process)\
                             .transform(get_Home)
@@ -239,7 +231,6 @@ class wifiScore():
         
         # get phyrate
         condition = col("sdcd_tx_link_rate") < 65
-        window_spec = Window().rowsBetween(Window.unboundedPreceding, Window.unboundedFollowing)
         
         df_phy = df_stationHist.transform(get_phyrate)\
                             .groupby( device_ids )\
@@ -254,11 +245,11 @@ class wifiScore():
     def apply_weights(self, df = None):
         if df is None:
             df = self.df_phy.join( self.stationarity, ["rowkey","rk_row_sn","serial_num","station_mac"], "inner")
-            
+        # Devices with low Phy Rate and classified as stationary, label avg_phyrate/20.718; others label 1
         df = df.withColumn("label", F.when( (col("avg_phyrate") <= 20.718)&(col("stationarity") == 1), 
                                                 col("avg_phyrate")/20.718)\
                                             .otherwise(1)) 
-        
+        # normalized weight
         window_spec = Window.partitionBy("serial_num") 
         df = df.withColumn("sum_label", F.sum("label").over(window_spec)) 
         df = df.withColumn("weights", F.col("label") / F.col("sum_label"))\
@@ -325,22 +316,20 @@ if __name__ == "__main__":
 
     ins1 = wifiScore(  
                     sparksession = spark,
-                    day = datetoday,
-                    station_history_path = hdfs_pd + "/usr/apps/vmas/sha_data/bhrx_hourly_data/StationHistory/20240104"
+                    day = datetoday
                     )
 
     df_deviceScore = ins1.df_deviceScore
     df_deviceScore = round_columns(df_deviceScore,["avg_phyrate","poor_phyrate","poor_rssi","device_score"], 2)
     df_deviceScore = round_columns(df_deviceScore,["weights"], 4)
-
     df_deviceScore.repartition(100)\
             .write.mode("overwrite")\
             .parquet( hdfs_pd + "/user/ZheS/wifi_score_v2/deviceScore_dataframe/" + datetoday.strftime("%Y-%m-%d") )
 
-    ins1.df_deviceScore
-    """
+    ins1.df_homeScore.repartition(100)\
+            .write.mode("overwrite")\
+            .parquet( hdfs_pd + "/user/ZheS/wifi_score_v2/homeScore_dataframe/" + datetoday.strftime("%Y-%m-%d") )
+    
 
-    """
-    #df_homeScore = ins1.df_homeScore
-    #df_homeScore = round_columns(df_homeScore,["poor_phyrate","poor_rssi","home_score"], 2)
+
     
