@@ -153,22 +153,24 @@ class wifiScore():
         self.df_rssi = self.get_rssi_dataframe()
         self.df_phy = self.get_phyrate_dataframe()
         self.df_phy_weights = self.apply_weights()
-        self.df_phy_rssi = self.df_phy_weights.drop('poor_count', 'total_count')\
-                                    .join( self.df_rssi.drop('count_cat1', 'count_cat2', 'count_cat3', 'total_count'), 
-                                            device_ids)
+        self.df_phy_rssi = self.get_rssi_phyrate_weights()
         self.df_all_features = self.add_info()
         self.df_deviceScore = self.df_all_features.withColumn( 
                                             "device_score", 
                                             (100 - col("poor_rssi")) * 0.4 + (100 - col("poor_phyrate")) * 0.6 
                                         )\
                                 .drop("dg_rowkey")
-        self.df_homeScore = self.df_deviceScore .groupBy("serial_num", "mdn", "cust_id")\
-                            .agg( 
-                                F.round(F.sum(col("poor_rssi") * col("weights")), 4).alias("poor_rssi"), 
-                                F.round(F.sum(col("poor_phyrate") * col("weights")), 4).alias("poor_phyrate"), 
-                                F.round(F.sum(col("device_score") * col("weights")), 4).alias("home_score") 
-                            )
+        self.df_homeScore = self.df_deviceScore.groupBy("serial_num", "mdn", "cust_id")\
+                    .agg(  
+                        F.round(F.sum(col("poor_rssi") * col("weights")), 4).alias("poor_rssi"),  
+                        F.round(F.sum(col("poor_phyrate") * col("weights")), 4).alias("poor_phyrate"),  
+                        F.round(F.sum(col("device_score") * col("weights")), 4).alias("home_score"), 
+                        F.collect_set("dg_model").alias("dg_model"), 
+                        F.collect_set("Rou_Ext").alias("Rou_Ext"), 
+                    )\
+                    .withColumn("date", F.lit( ( datetime.strptime(self.date_str2,"%Y-%m-%d") - timedelta(1) ).strftime("%Y-%m-%d") )) 
 
+        
     def filter_outlier(self, df = None, partition_columns = None, percentiles = None, column_name = None):
         if df is None:
             df = self.df_stationHist 
@@ -260,7 +262,28 @@ class wifiScore():
                                 decimal_places = 4
                             )
         return df
-    
+    def get_rssi_phyrate_weights(self,df_phy_weights = None, df_rssi = None):
+        # it is suppose to define weights after joi phyrate and rssi, because some record filtered out in df_rssi
+        # but i am lazy to fix that, so i re-normalize the weights here. 
+        if df_phy_weights is None:
+            df_phy_weights = self.df_phy_weights
+        if df_rssi is None:
+            df_rssi = self.df_rssi   
+        
+        df = df_phy_weights.drop('poor_count', 'total_count')\
+                            .join( df_rssi.drop('count_cat1', 'count_cat2', 'count_cat3', 'total_count'), 
+                                    device_ids)
+        
+        window_spec = Window().partitionBy("serial_num") 
+        df_normalized = df.withColumn("total_weight", F.sum("weights").over(window_spec)) 
+        df_normalized = df_normalized.withColumn("weights", F.col("weights") / F.col("total_weight"))\
+                                    .drop("total_weight") 
+        
+        df = round_columns(df_normalized, 
+                        numeric_columns = ["poor_rssi","weights"], 
+                        decimal_places = 4
+                    )
+        return df
     def add_info(self, df_phy_rssi = None, date_str1 = None, date_str2 = None):
         if df_phy_rssi is None:
             df_phy_rssi = self.df_phy_rssi.join( self.parent_id, device_ids )
@@ -270,30 +293,36 @@ class wifiScore():
             date_str2 = self.date_str2
         
         # add mdn and cust_id
-        try:
-            d = date_str2
-            p = hdfs_pd +"/usr/apps/vmas/5g_data/fixed_5g_router_mac_sn_mapping/{}/fixed_5g_router_mac_sn_mapping.csv".format(d)
-            df_join = self.spark.read.option("header","true").csv(p)\
-                        .select( col("mdn_5g").alias("mdn"),
-                                col("serialnumber").alias("serial_num"),
-                                "cust_id"
-                                )
-        except:
-            d = ( datetime.strptime(date_str2,"%Y-%m-%d") - timedelta(1) ).strftime("%Y-%m-%d")
-            p = hdfs_pd +"/usr/apps/vmas/5g_data/fixed_5g_router_mac_sn_mapping/{}/fixed_5g_router_mac_sn_mapping.csv".format(d)
-            df_join = self.spark.read.option("header","true").csv(p)\
-                        .select( col("mdn_5g").alias("mdn"),
-                                col("serialnumber").alias("serial_num"),
-                                "cust_id"
-                                )
+        days_before = [1, 2, 3, 4, 5] 
+        for days_ago in days_before: 
+            try:
+                d = ( datetime.strptime(date_str2,"%Y-%m-%d") - timedelta(days_ago) ).strftime("%Y-%m-%d")
+                p = hdfs_pd +"/usr/apps/vmas/5g_data/fixed_5g_router_mac_sn_mapping/{}/fixed_5g_router_mac_sn_mapping.csv".format(d)
+                df_join = self.spark.read.option("header","true").csv(p)\
+                            .select( col("mdn_5g").alias("mdn"),
+                                    col("serialnumber").alias("serial_num"),
+                                    "cust_id"
+                                    )
+                break
+            except:
+                pass
         df_all = df_join.join( df_phy_rssi, "serial_num", "right" )
         
         # add device group information and Router/Extender
-        device_groups_path1 = device_groups_path + date_str1
-        dfdg = self.spark.read.parquet(device_groups_path1)\
-                                .select("rowkey",explode("Group_Data_sys_info"))\
-                                .transform(flatten_df_v2)\
-                                .transform(DG_process)
+        days_before = [0, 1, 2, 3, 4, 5] 
+        for days_ago in days_before: 
+            try:
+                d = ( datetime.strptime(date_str1,"%Y%m%d") - timedelta(days_ago) ).strftime("%Y%m%d")
+                device_groups_path1 = device_groups_path + d
+                
+                dfdg = self.spark.read.parquet(device_groups_path1)\
+                                        .select("rowkey",explode("Group_Data_sys_info"))\
+                                        .transform(flatten_df_v2)\
+                                        .transform(DG_process)
+                break
+            except:
+                pass
+                                
         cond = [dfdg.dg_rowkey==df_all.rk_row_sn, dfdg.RouExt_mac==df_all.parent_id]
         df_mac =  dfdg.join(df_all,cond,"right")\
                         .withColumn("Rou_Ext",when( col("parent_mac").isNotNull(),1 ).otherwise(0) )
@@ -320,7 +349,7 @@ if __name__ == "__main__":
             .enableHiveSupport().getOrCreate()
     #
     hdfs_pd = "hdfs://njbbvmaspd11.nss.vzwnet.com:9000/"
-    datetoday = date.today()
+    datetoday = date.today() - timedelta(0)
 
     ins1 = wifiScore(  
                     sparksession = spark,
@@ -334,10 +363,11 @@ if __name__ == "__main__":
     df_deviceScore = round_columns(df_deviceScore,["weights"], 4)
     df_deviceScore.repartition(100)\
             .write.mode("overwrite")\
-            .parquet( hdfs_pd + "/user/ZheS/wifi_score_v2/deviceScore_dataframe/" + datetoday.strftime("%Y-%m-%d") )
+            .parquet( hdfs_pd + "/user/ZheS/wifi_score_v2/deviceScore_dataframe/" + (datetoday - timedelta(1)).strftime("%Y-%m-%d") )
+    
     ins1.df_homeScore.repartition(100)\
             .write.mode("overwrite")\
-            .parquet( hdfs_pd + "/user/ZheS/wifi_score_v2/homeScore_dataframe/" + datetoday.strftime("%Y-%m-%d") )
+            .parquet( hdfs_pd + "/user/ZheS/wifi_score_v2/homeScore_dataframe/" + (datetoday- timedelta(1)).strftime("%Y-%m-%d") )
     
 
 
