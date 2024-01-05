@@ -270,14 +270,22 @@ class wifiScore():
             date_str2 = self.date_str2
         
         # add mdn and cust_id
-        d = ( datetime.strptime(date_str2,"%Y-%m-%d") ).strftime("%Y-%m-%d")
-        p = hdfs_pd +"/usr/apps/vmas/5g_data/fixed_5g_router_mac_sn_mapping/{}/fixed_5g_router_mac_sn_mapping.csv".format(d)
-        
-        df_join = self.spark.read.option("header","true").csv(p)\
-                    .select( col("mdn_5g").alias("mdn"),
-                            col("serialnumber").alias("serial_num"),
-                            "cust_id"
-                            )
+        try:
+            d = date_str2
+            p = hdfs_pd +"/usr/apps/vmas/5g_data/fixed_5g_router_mac_sn_mapping/{}/fixed_5g_router_mac_sn_mapping.csv".format(d)
+            df_join = self.spark.read.option("header","true").csv(p)\
+                        .select( col("mdn_5g").alias("mdn"),
+                                col("serialnumber").alias("serial_num"),
+                                "cust_id"
+                                )
+        except:
+            d = ( datetime.strptime(date_str2,"%Y-%m-%d") - timedelta(1) ).strftime("%Y-%m-%d")
+            p = hdfs_pd +"/usr/apps/vmas/5g_data/fixed_5g_router_mac_sn_mapping/{}/fixed_5g_router_mac_sn_mapping.csv".format(d)
+            df_join = self.spark.read.option("header","true").csv(p)\
+                        .select( col("mdn_5g").alias("mdn"),
+                                col("serialnumber").alias("serial_num"),
+                                "cust_id"
+                                )
         df_all = df_join.join( df_phy_rssi, "serial_num", "right" )
         
         # add device group information and Router/Extender
@@ -318,14 +326,15 @@ if __name__ == "__main__":
                     sparksession = spark,
                     day = datetoday
                     )
+    """
 
+    """
     df_deviceScore = ins1.df_deviceScore
     df_deviceScore = round_columns(df_deviceScore,["avg_phyrate","poor_phyrate","poor_rssi","device_score"], 2)
     df_deviceScore = round_columns(df_deviceScore,["weights"], 4)
     df_deviceScore.repartition(100)\
             .write.mode("overwrite")\
             .parquet( hdfs_pd + "/user/ZheS/wifi_score_v2/deviceScore_dataframe/" + datetoday.strftime("%Y-%m-%d") )
-
     ins1.df_homeScore.repartition(100)\
             .write.mode("overwrite")\
             .parquet( hdfs_pd + "/user/ZheS/wifi_score_v2/homeScore_dataframe/" + datetoday.strftime("%Y-%m-%d") )
