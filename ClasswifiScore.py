@@ -127,11 +127,11 @@ def round_columns(df,numeric_columns = None, decimal_places=4):
     return df 
 
 class wifiScore():
-    global hdfs_pd, station_history_path, device_groups_path, device_ids
+    global hdfs_pd, station_history_path, device_groups_path,serial_mdn_custid, device_ids
     hdfs_pd = "hdfs://njbbvmaspd11.nss.vzwnet.com:9000/"
     station_history_path = hdfs_pd + "/usr/apps/vmas/sha_data/bhrx_hourly_data/StationHistory/"
     device_groups_path = hdfs_pd + "/usr/apps/vmas/sha_data/bhrx_hourly_data/DeviceGroups/"
-    serial_mdn_custid = "/usr/apps/vmas/5g_data/fixed_5g_router_mac_sn_mapping/{}/fixed_5g_router_mac_sn_mapping.csv"
+    serial_mdn_custid = hdfs_pd + "/usr/apps/vmas/5g_data/fixed_5g_router_mac_sn_mapping/{}/fixed_5g_router_mac_sn_mapping.csv"
     device_ids = ["rowkey","rk_row_sn","serial_num","station_mac"]
     
     def __init__(self, 
@@ -297,7 +297,8 @@ class wifiScore():
         for days_ago in days_before: 
             try:
                 d = ( datetime.strptime(date_str2,"%Y-%m-%d") - timedelta(days_ago) ).strftime("%Y-%m-%d")
-                p = hdfs_pd +"/usr/apps/vmas/5g_data/fixed_5g_router_mac_sn_mapping/{}/fixed_5g_router_mac_sn_mapping.csv".format(d)
+                #p = hdfs_pd +"/usr/apps/vmas/5g_data/fixed_5g_router_mac_sn_mapping/{}/fixed_5g_router_mac_sn_mapping.csv".format(d)
+                p = serial_mdn_custid.format(d)
                 df_join = self.spark.read.option("header","true").csv(p)\
                             .select( col("mdn_5g").alias("mdn"),
                                     col("serialnumber").alias("serial_num"),
@@ -349,26 +350,30 @@ if __name__ == "__main__":
             .enableHiveSupport().getOrCreate()
     #
     hdfs_pd = "hdfs://njbbvmaspd11.nss.vzwnet.com:9000/"
-    datetoday = date.today() - timedelta(0)
+    for i in [0]:
+        datetoday = date.today() - timedelta(i)
 
-    ins1 = wifiScore(  
-                    sparksession = spark,
-                    day = datetoday
-                    )
-    """
+        ins1 = wifiScore(  
+                        sparksession = spark,
+                        day = datetoday
+                        )
+        """
 
-    """
-    df_deviceScore = ins1.df_deviceScore
-    df_deviceScore = round_columns(df_deviceScore,["avg_phyrate","poor_phyrate","poor_rssi","device_score"], 2)
-    df_deviceScore = round_columns(df_deviceScore,["weights"], 4)
-    df_deviceScore.repartition(100)\
-            .write.mode("overwrite")\
-            .parquet( hdfs_pd + "/user/ZheS/wifi_score_v2/deviceScore_dataframe/" + (datetoday - timedelta(1)).strftime("%Y-%m-%d") )
-    
-    ins1.df_homeScore.repartition(100)\
-            .write.mode("overwrite")\
-            .parquet( hdfs_pd + "/user/ZheS/wifi_score_v2/homeScore_dataframe/" + (datetoday- timedelta(1)).strftime("%Y-%m-%d") )
-    
+        """
+        df_deviceScore = ins1.df_deviceScore
+        df_deviceScore = round_columns(df_deviceScore,["avg_phyrate","poor_phyrate","poor_rssi","device_score"], 2)
+        df_deviceScore = round_columns(df_deviceScore,["weights"], 4)
+        #
+        #df_deviceScore.repartition(100)\
+        df_deviceScore\
+                .write.mode("overwrite")\
+                .parquet( hdfs_pd + "/user/ZheS/wifi_score_v2/deviceScore_dataframe/" + (datetoday - timedelta(1)).strftime("%Y-%m-%d") )
+                
+        #ins1.df_homeScore.repartition(100)\
+        ins1.df_homeScore\
+                .write.mode("overwrite")\
+                .parquet( hdfs_pd + "/user/ZheS/wifi_score_v2/homeScore_dataframe/" + (datetoday- timedelta(1)).strftime("%Y-%m-%d") )
+        
 
 
     
