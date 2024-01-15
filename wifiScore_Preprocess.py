@@ -1,7 +1,9 @@
 from pyspark.sql import functions as F 
 from pyspark.sql.functions import (concat,from_unixtime,lpad, broadcast, sum, udf, col, abs, length, min, max, lit, avg, when, concat_ws, to_date, exp, explode,countDistinct, first,round  ) 
 from pyspark.sql import SparkSession 
-from datetime import datetime, timedelta, date 
+from datetime import datetime, timedelta, date
+from dateutil.relativedelta import relativedelta 
+
 from dateutil.parser import parse
 import argparse 
 import pandas as pd
@@ -57,157 +59,97 @@ def union_df_list(df_list):
             # Optionally, you can log the error for further investigation   
     return df_post
 
+def get_monthly_extender(start_date, window_range = 30):
+    df_list = []
+        
+    for i in range(1, window_range):
+        d = ( start_date + timedelta(i) ).strftime('%Y-%m-%d')
+        # at d day, whether home connected with router exclusive or extender
+        try:
+            df = spark.read.json(hdfs_pd + f"user/maggie/temp1.1/wifiScore_detail{d}.json")\
+                        .withColumn( "Rou_Ext", F.explode( "Rou_Ext" ))\
+                        .groupBy("date","serial_num").agg( max("Rou_Ext").alias("Rou_Ext") )
+            df_list.append(df)
+        except Exception as e:
+            print(e)
+            print(d)
+    
+    union_df = union_df_list(df_list)
+    union_df.groupBy("serial_num").agg( F.max("Rou_Ext").alias("Rou_Ext") )
+    return union_df
+
+def month_agg_serial(date_range, df_join, file_path_pattern = None, columns_to_average = None,  id_columns = None):
+    if file_path_pattern is None:
+        file_path_pattern = 'hdfs://njbbvmaspd11.nss.vzwnet.com:9000/' + "user/maggie/temp1.1/wifiScore_detail{}.json"
+    if columns_to_average is None:
+        columns_to_average = ["avg_phyrate", "poor_phyrate", "poor_rssi", "score", "weights", 'count_rssi_drop', 'count_rssi_ori','stationarity'] 
+    if id_columns is None:
+        id_columns = ['#dropped', 'Rou_Ext', 'avg_phyrate', 'count_rssi_drop', 'count_rssi_ori', 'cust_id', 'date', 'dg_model', 'firmware', 'mdn', 'poor_phyrate', 'poor_rssi', 'rk_row_sn', 'rowkey', 'score', 'serial_num', 'station_mac', 'stationarity', 'weights']
+    df_list = [] 
+    for d in date_range: 
+        file_path = file_path_pattern.format( d )
+        try:
+            df_kpis = spark.read.json(file_path).select(id_columns)
+            
+            df_list.append(df_kpis)
+        except Exception as e:
+            print(e)    
+
+    aug_noExtenders = union_df_list(df_list).join( df_join, "serial_num" )
+    average_columns = [F.avg(col).alias(col) for col in columns_to_average]
+    median_columns = [ F.expr(f"percentile_approx({col}, {0.5})").alias(f"median_{col}") 
+        for col in columns_to_average] 
+
+    result_df = aug_noExtenders.groupBy("serial_num")\
+                                .agg(*average_columns, 
+                                        *median_columns, 
+                                        F.count("*").alias("count")) 
+
+    numeric_columns = [e for e in result_df.columns if e != "serial_num"]
+    return round_numeric_columns(result_df, decimal_places= 4, numeric_columns = numeric_columns )
+
 if __name__ == "__main__":
     # the only input is the date which is used to generate 'date_range'
     spark = SparkSession.builder.appName('ZheS_wifiscore')\
                         .config("spark.sql.adapative.enabled","true")\
                         .getOrCreate()
     hdfs_pd = 'hdfs://njbbvmaspd11.nss.vzwnet.com:9000/'
-    id_columns = ['#dropped', 'Rou_Ext', 'avg_phyrate', 'count_rssi_drop', 'count_rssi_ori', 'cust_id', 'date', 'dg_model', 'firmware', 'mdn', 'poor_phyrate', 'poor_rssi', 'rk_row_sn', 'rowkey', 'score', 'serial_num', 'station_mac', 'stationarity', 'weights']
-    
-    df_aug = spark.read.parquet(hdfs_pd+"/user/ZheS/wifi_score_v2/Rou_ext_Aug")\
-                    .groupBy("serial_num").agg( F.max("Rou_Ext").alias("Rou_Ext") )
-    df_sept = spark.read.parquet(hdfs_pd+"/user/ZheS/wifi_score_v2/Rou_ext_Sept")\
-                    .groupBy("serial_num").agg( F.max("Rou_Ext").alias("Rou_Ext") )
-    df_join = df_aug.filter( col("Rou_Ext") == "0" ).join( df_sept.filter( col("Rou_Ext") == "1" ), "serial_num" )\
+
+    #--------------------------------------------------------------------------------
+    extender_month = 10
+    install_extender_date = datetime(2023, extender_month, 1); 
+    before_extender_date = install_extender_date - relativedelta(months=1); 
+    after_extender_date = install_extender_date + relativedelta(months=1) 
+
+    # 1. get extender list monthly ---------------------------------------------------------------
+    df1 = get_monthly_extender( before_extender_date )
+    df2 = get_monthly_extender( install_extender_date )
+    df3 = get_monthly_extender( install_extender_date )
+    df_extender = df1.filter( col("Rou_Ext") == "0" )\
+                    .join( df2.filter( col("Rou_Ext") == "1" ), "serial_num" )\
+                    .join( df3.filter( col("Rou_Ext") == "1" ), "serial_num" )\
                     .select("serial_num")
 
-
-
-    file_path_pattern = hdfs_pd + "user/maggie/temp1.1/wifiScore_detail{}.json"
-    id_columns = ['#dropped', 'Rou_Ext', 'avg_phyrate', 'count_rssi_drop', 'count_rssi_ori', 'cust_id', 'date', 'dg_model', 'firmware', 'mdn', 'poor_phyrate', 'poor_rssi', 'rk_row_sn', 'rowkey', 'score', 'serial_num', 'station_mac', 'stationarity', 'weights']
-    columns_to_average = ["avg_phyrate", "poor_phyrate", "poor_rssi", "score", "weights", 'count_rssi_drop', 'count_rssi_ori','stationarity'] 
-
-    def cal_avg_serial(date_range,file_path_pattern, id_columns, columns_to_average):
-        df_list = [] 
-        for d in date_range: 
-            file_path = file_path_pattern.format( d )
-            try:
-                df_kpis = spark.read.json(file_path).select(id_columns)
-                
-                df_list.append(df_kpis)
-            except Exception as e:
-                print(e)    
-
-        aug_noExtenders = union_df_list(df_list).join( df_join, "serial_num" )
-        average_columns = [F.avg(col).alias(col) for col in columns_to_average]
-        median_columns = [ F.expr(f"percentile_approx({col}, {0.5})").alias(f"median_{col}") 
-            for col in columns_to_average] 
-
-
-
-        result_df = aug_noExtenders.groupBy("serial_num")\
-                                    .agg(*average_columns, 
-                                         *median_columns, 
-                                         F.count("*").alias("count")) 
-        #averages = {col_name: "avg" for col_name in columns_to_average} 
-        #aug_noExtenders.groupby("serial_num").agg(averages)
-        numeric_columns = [e for e in result_df.columns if e != "serial_num"]
-        return round_numeric_columns(result_df, decimal_places= 4, numeric_columns = numeric_columns )
-    
-    """
-    
-    oct_range = [ (datetime(2023, 10 , 1) + timedelta(i) ).strftime('%Y-%m-%d') for i in range(30) ]
-    oct_serial_features = cal_avg_serial(oct_range,file_path_pattern, id_columns,columns_to_average)\
+    # 2. join before extender features and after extender features (exclude install extender month)
+    after_range = [ ( after_extender_date + timedelta(i) ).strftime('%Y-%m-%d') for i in range(30) ]
+    after_serial_features = month_agg_serial(after_range, df_extender)\
                             .select( "serial_num", col("score").alias("target_score") )
     
-    aug_range = [ (datetime(2023, 8 , 1) + timedelta(i) ).strftime('%Y-%m-%d') for i in range(30) ]
-    aug_serial_features = cal_avg_serial(aug_range, file_path_pattern, id_columns,columns_to_average)
+    before_range = [ ( before_extender_date + timedelta(i) ).strftime('%Y-%m-%d') for i in range(30) ]
+    before_serial_features = month_agg_serial(before_range,  df_extender)
 
-    output_path = hdfs_pd + "/user/ZheS/wifi_score_v2/training_data"
-    aug_serial_features.join(oct_serial_features, "serial_num" )\
+    output_path = hdfs_pd + "/user/ZheS/wifi_score_v2/training_dataset/" + \
+                        f"{before_extender_date.strftime('%b')}_\
+                            {install_extender_date.strftime('%b')}_\
+                            {after_extender_date.strftime('%b')}"
+
+    before_serial_features.join(after_serial_features, "serial_num" )\
                         .coalesce(10)\
                         .write.mode("overwrite").parquet(output_path)
-    #            .repartition(1).write.csv(output_path, header=True, mode="overwrite") 
-
-    """
-
-
-
-    def cal_avg(date_range,file_path_pattern, id_columns):
-        df_list = [] 
-        for d in date_range: 
-            file_path = file_path_pattern.format( d )
-            try:
-                df_kpis = spark.read.json(file_path).select(id_columns)
-                
-                df_list.append(df_kpis)
-            except Exception as e:
-                print(e)    
-        aug_all =  union_df_list(df_list)
-        aug_noExtenders = aug_all.join( df_join, "serial_num" )
-
-        # Columns for which you want to calculate the average 
-        
-        averages = {col_name: "avg" for col_name in columns_to_average} 
-        print( date_range[0][:7], "only extender experiment group" )
-        aug_noExtenders.agg(averages).show()
-        print( date_range[0][:7], "all group" )
-        aug_all.agg(averages).show()
-
-    """
-    cal_avg([ (datetime(2023, 8 , 1) + timedelta(i) ).strftime('%Y-%m-%d') for i in range(30) ],
-          file_path_pattern, id_columns)
-    cal_avg([ (datetime(2023, 9 , 1) + timedelta(i) ).strftime('%Y-%m-%d') for i in range(30) ],
-          file_path_pattern, id_columns)
-    cal_avg([ (datetime(2023, 10 , 1) + timedelta(i) ).strftime('%Y-%m-%d') for i in range(30) ],
-          file_path_pattern, id_columns)
-    """
-
-    def get_extender_month(start_date):
-        df_list = []
-          
-        for i in range(1, 30):
-            d = ( start_date + timedelta(i) ).strftime('%Y-%m-%d')
-            # at d day, whether home connected with router exclusive or extender
-            try:
-                df = spark.read.json(hdfs_pd + f"user/maggie/temp1.1/wifiScore_detail{d}.json")\
-                            .withColumn( "Rou_Ext", F.explode( "Rou_Ext" ))\
-                            .groupBy("date","serial_num").agg( max("Rou_Ext").alias("Rou_Ext") )
-                df_list.append(df)
-            except Exception as e:
-                print(e)
-                print(d)
-        
-        union_df = union_df_list(df_list)
-        union_df.repartition(100)\
-                .write.parquet(hdfs_pd + f"/user/ZheS/wifi_score_v2/Rou_ext_{start_date.strftime('%b')}")
-
-    get_extender_month( datetime(2023, 12 , 1)  )
 
 
 
 
 
-    
-    # comparing the Rou_Ext column between two adjacent day,
-    # if the difference is 1, then add new extender;
-    # if the difference is 0, then keep using exclusively router
-    # but, there are many -1, this methodology can not distinct extender family
-    def get_extender_daily(date_val): 
-        """ 
-        Process two JSON files for the given date and return a DataFrame with differences. 
-        """ 
-
-        file_path1 = f"/user/maggie/temp1.1/wifiScore_detail{ date_val.strftime('%Y-%m-%d') }.json" 
-        file_path2 = f"/user/maggie/temp1.1/wifiScore_detail{ (date_val- timedelta(1) ).strftime('%Y-%m-%d')  }.json" 
-        df1 = spark.read.json(file_path1) 
-        df2 = spark.read.json(file_path2) 
-        
-        df_device1 = ( 
-            df1.withColumn("Rou1", F.explode(col("Rou_Ext"))) 
-            .groupBy("serial_num").max("Rou1") 
-            .withColumnRenamed("max(Rou1)", "Rou_today") 
-        ) 
-        
-        df_device2 = ( 
-            df2.withColumn("Rou2", F.explode(col("Rou_Ext"))) 
-            .groupBy("serial_num").max("Rou2") 
-            .withColumnRenamed("max(Rou2)", "Rou_yest") 
-        ) 
-        
-        df_join = df_device1.join(df_device2, "serial_num").withColumn("diff", col("Rou_today") - col("Rou_yest")) 
-        
-        return df_join
 
 
