@@ -1,16 +1,9 @@
 from datetime import datetime, timedelta, date
-import pandas as pd
-import numpy as np
-
 from pyspark.sql.window import Window
-
 from pyspark.sql.functions import sum, concat_ws, col, split, concat_ws, lit ,udf,count, max,lit,avg, when,concat_ws,to_date,explode
-import argparse
-from html import parser
 from pyspark.sql.types import *
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
-
 
 def flatten_df_v2(nested_df):
     # flat the nested columns and return as a new column
@@ -365,7 +358,7 @@ if __name__ == "__main__":
         df_deviceScore = round_columns(df_deviceScore,["weights"], 4)
         #
         #df_deviceScore.repartition(100)\
-        df_deviceScore\
+        df_deviceScore.dropDuplicates()\
                 .write.mode("overwrite")\
                 .parquet( hdfs_pd + "/user/ZheS/wifi_score_v2/deviceScore_dataframe/" + (datetoday - timedelta(1)).strftime("%Y-%m-%d") )
                 
