@@ -6,15 +6,9 @@ from dateutil.relativedelta import relativedelta
 
 from dateutil.parser import parse
 import argparse 
-import pandas as pd
-import smtplib
-import smtplib
-from email.mime.text import MIMEText
-from email import encoders
-from email.mime.base import MIMEBase
-from email.mime.multipart import MIMEMultipart
-from email.utils import COMMASPACE, formatdate
-import os
+
+from functools import reduce 
+import sys
 
 def round_numeric_columns(df, decimal_places=2, numeric_columns = None): 
 
@@ -27,44 +21,12 @@ def round_numeric_columns(df, decimal_places=2, numeric_columns = None):
         
     return df
 
-def union_df_list(df_list):   
-
-    """   
-    Union a list of DataFrames and apply filters to remove duplicates and null values in 'ENODEB' column.   
-    Args:   
-        df_list (list): List of PySpark DataFrames to be unioned.  
-    Returns:  
-        DataFrame: Unioned DataFrame with duplicates removed and filters applied.   
-
-    """   
-    # Initialize the result DataFrame with the first DataFrame in the list
-    try:
-        df_post = df_list[0]
-    except Exception as e:    
-        # Handle the case where data is missing for the current DataFrame (df_temp_kpi)   
-        print(f"Error processing DataFrame {0}: {e}")   
-        
-    # Iterate through the rest of the DataFrames in the list   
-    for i in range(1, len(df_list)):    
-        try:    
-            # Get the current DataFrame from the list   
-            df_temp_kpi = df_list[i]   
-            # Union the data from df_temp_kpi with df_kpis and apply filters    
-            df_post = (   
-                df_post.union(df_temp_kpi)   
-            )   
-        except Exception as e:    
-            # Handle the case where data is missing for the current DataFrame (df_temp_kpi)   
-            print(f"Error processing DataFrame {i}: {e}")   
-            # Optionally, you can log the error for further investigation   
-    return df_post
-
 def get_monthly_extender(start_date, window_range = 30):
     df_list = []
-        
+    
+    # label the device as extender-connected(Rou_Ext = 1) as long as one time connected to the extender
     for i in range(1, window_range):
         d = ( start_date + timedelta(i) ).strftime('%Y-%m-%d')
-        # at d day, whether home connected with router exclusive or extender
         try:
             df = spark.read.json(hdfs_pd + f"user/maggie/temp1.1/wifiScore_detail{d}.json")\
                         .withColumn( "Rou_Ext", F.explode( "Rou_Ext" ))\
@@ -73,18 +35,20 @@ def get_monthly_extender(start_date, window_range = 30):
         except Exception as e:
             print(e)
             print(d)
+    # label the home as extender-connected(Rou_Ext = 1) as long as one device connected to the extender
+    union_df = reduce(lambda df1, df2: df1.unionAll(df2), df_list) 
+    result_df = union_df.groupBy("serial_num").agg( F.max("Rou_Ext").alias("Rou_Ext") )
     
-    union_df = union_df_list(df_list)
-    union_df.groupBy("serial_num").agg( F.max("Rou_Ext").alias("Rou_Ext") )
-    return union_df
+    return result_df
 
-def month_agg_serial(date_range, df_join, file_path_pattern = None, columns_to_average = None,  id_columns = None):
+def month_agg_serial(date_range, df_extender, file_path_pattern = None, columns_to_agg = None,  id_columns = None):
     if file_path_pattern is None:
         file_path_pattern = 'hdfs://njbbvmaspd11.nss.vzwnet.com:9000/' + "user/maggie/temp1.1/wifiScore_detail{}.json"
-    if columns_to_average is None:
-        columns_to_average = ["avg_phyrate", "poor_phyrate", "poor_rssi", "score", "weights", 'count_rssi_drop', 'count_rssi_ori','stationarity'] 
+    if columns_to_agg is None:
+        columns_to_agg = ["avg_phyrate", "poor_phyrate", "poor_rssi", "score", "weights", 'count_rssi_drop', 'count_rssi_ori','stationarity'] 
     if id_columns is None:
         id_columns = ['#dropped', 'Rou_Ext', 'avg_phyrate', 'count_rssi_drop', 'count_rssi_ori', 'cust_id', 'date', 'dg_model', 'firmware', 'mdn', 'poor_phyrate', 'poor_rssi', 'rk_row_sn', 'rowkey', 'score', 'serial_num', 'station_mac', 'stationarity', 'weights']
+    
     df_list = [] 
     for d in date_range: 
         file_path = file_path_pattern.format( d )
@@ -95,12 +59,12 @@ def month_agg_serial(date_range, df_join, file_path_pattern = None, columns_to_a
         except Exception as e:
             print(e)    
 
-    aug_noExtenders = union_df_list(df_list).join( df_join, "serial_num" )
-    average_columns = [F.avg(col).alias(col) for col in columns_to_average]
+    Extenders = reduce(lambda df1, df2: df1.unionAll(df2), df_list).join( broadcast(df_extender), "serial_num" )
+    average_columns = [F.avg(col).alias(col) for col in columns_to_agg]
     median_columns = [ F.expr(f"percentile_approx({col}, {0.5})").alias(f"median_{col}") 
-        for col in columns_to_average] 
+                        for col in columns_to_agg] 
 
-    result_df = aug_noExtenders.groupBy("serial_num")\
+    result_df = Extenders.groupBy("serial_num")\
                                 .agg(*average_columns, 
                                         *median_columns, 
                                         F.count("*").alias("count")) 
@@ -108,6 +72,37 @@ def month_agg_serial(date_range, df_join, file_path_pattern = None, columns_to_a
     numeric_columns = [e for e in result_df.columns if e != "serial_num"]
     return round_numeric_columns(result_df, decimal_places= 4, numeric_columns = numeric_columns )
 
+def mergeHomeData(extender_month):
+
+    install_extender_date = datetime(2023, extender_month, 1); 
+    before_extender_date = install_extender_date - relativedelta(months=1); 
+    after_extender_date = install_extender_date + relativedelta(months=1) 
+
+    # 1. get extender list monthly ---------------------------------------------------------------
+    df1 = get_monthly_extender( start_date = before_extender_date )
+    df2 = get_monthly_extender( start_date = install_extender_date )
+    df3 = get_monthly_extender( start_date = install_extender_date )
+    df_extender = df1.filter( col("Rou_Ext") == "0" )\
+                    .join( df2.filter( col("Rou_Ext") == "1" ), "serial_num" )\
+                    .join( df3.filter( col("Rou_Ext") == "1" ), "serial_num" )\
+                    .select("serial_num")
+
+    # 2. join before extender features and after extender features (exclude install extender month)
+    date_window = 30
+    after_range = [ ( after_extender_date + timedelta(i) ).strftime('%Y-%m-%d') for i in range(date_window) ]
+    after_serial_features = month_agg_serial(after_range, df_extender)\
+                            .select( "serial_num", col("score").alias("target_score") )
+    
+    before_range = [ ( before_extender_date + timedelta(i) ).strftime('%Y-%m-%d') for i in range(date_window) ]
+    before_serial_features = month_agg_serial(before_range,  df_extender)
+    #before_serial_features.show(); sys.exit()
+    output_path = hdfs_pd + "/user/ZheS/wifi_score_v2/training_dataset/" + \
+                        f"{before_extender_date.strftime('%b')}_{install_extender_date.strftime('%b')}_{after_extender_date.strftime('%b')}"
+
+    before_serial_features.join(after_serial_features, "serial_num" )\
+                        .repartition(10)\
+                        .write.mode("overwrite").parquet(output_path)
+    
 if __name__ == "__main__":
     # the only input is the date which is used to generate 'date_range'
     spark = SparkSession.builder.appName('ZheS_wifiscore')\
@@ -117,35 +112,8 @@ if __name__ == "__main__":
 
     #--------------------------------------------------------------------------------
     extender_month = 10
-    install_extender_date = datetime(2023, extender_month, 1); 
-    before_extender_date = install_extender_date - relativedelta(months=1); 
-    after_extender_date = install_extender_date + relativedelta(months=1) 
-
-    # 1. get extender list monthly ---------------------------------------------------------------
-    df1 = get_monthly_extender( before_extender_date )
-    df2 = get_monthly_extender( install_extender_date )
-    df3 = get_monthly_extender( install_extender_date )
-    df_extender = df1.filter( col("Rou_Ext") == "0" )\
-                    .join( df2.filter( col("Rou_Ext") == "1" ), "serial_num" )\
-                    .join( df3.filter( col("Rou_Ext") == "1" ), "serial_num" )\
-                    .select("serial_num")
-
-    # 2. join before extender features and after extender features (exclude install extender month)
-    after_range = [ ( after_extender_date + timedelta(i) ).strftime('%Y-%m-%d') for i in range(30) ]
-    after_serial_features = month_agg_serial(after_range, df_extender)\
-                            .select( "serial_num", col("score").alias("target_score") )
-    
-    before_range = [ ( before_extender_date + timedelta(i) ).strftime('%Y-%m-%d') for i in range(30) ]
-    before_serial_features = month_agg_serial(before_range,  df_extender)
-
-    output_path = hdfs_pd + "/user/ZheS/wifi_score_v2/training_dataset/" + \
-                        f"{before_extender_date.strftime('%b')}_\
-                            {install_extender_date.strftime('%b')}_\
-                            {after_extender_date.strftime('%b')}"
-
-    before_serial_features.join(after_serial_features, "serial_num" )\
-                        .coalesce(10)\
-                        .write.mode("overwrite").parquet(output_path)
+    #--------------------------------------------------------------------------------
+    mergeHomeData( extender_month )
 
 
 
