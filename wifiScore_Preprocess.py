@@ -72,7 +72,7 @@ def month_agg_serial(date_range, df_extender, file_path_pattern = None, columns_
     numeric_columns = [e for e in result_df.columns if e != "serial_num"]
     return round_numeric_columns(result_df, decimal_places= 4, numeric_columns = numeric_columns )
 
-def mergeHomeData(extender_month):
+def mergeHomeData(extender_month,date_window = 30):
 
     install_extender_date = datetime(2023, extender_month, 1); 
     before_extender_date = install_extender_date - relativedelta(months=1); 
@@ -88,7 +88,7 @@ def mergeHomeData(extender_month):
                     .select("serial_num")
 
     # 2. join before extender features and after extender features (exclude install extender month)
-    date_window = 30
+    
     after_range = [ ( after_extender_date + timedelta(i) ).strftime('%Y-%m-%d') for i in range(date_window) ]
     after_serial_features = month_agg_serial(after_range, df_extender)\
                             .select( "serial_num", col("score").alias("target_score") )
