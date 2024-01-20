@@ -32,7 +32,7 @@ if __name__ == "__main__":
         except Exception as e:
             print(e)
     
-    start_date = datetime(2023, 8, 1); end_date = datetime(2023, 12, 20) 
+    start_date = datetime(2023, 8, 1); end_date = datetime(2023, 12, 30) 
     date_list = [ (start_date + timedelta(days=x)).strftime("%Y-%m-%d") for x in range((end_date - start_date).days + 1)] 
     file_path_pattern = hdfs_pd + "/user/ZheS/wifi_score_v2/homeScore_dataframe/{}"
 
@@ -47,8 +47,12 @@ if __name__ == "__main__":
                         F.count('home_score').alias('count') 
                         ) 
     filters = ['ASK-NCQ1338', 'ASK-NCQ1338FA', 'XCI55AX', 'CR1000A', 'WNC-CR200A']
-    result_df.filter(col("dg_model_indiv").isin(filters))\
-            .orderBy(col("month"),col("dg_model_indiv"))\
-            .show(30)
-    
+    df_send = result_df.filter(col("dg_model_indiv").isin(filters))\
+                        .orderBy(col("month"),col("dg_model_indiv"))
 
+    pd_df = df_send.toPandas()
+    report_file_name = f'{date_list[-1]}_{date_list[0]}.xlsx' 
+    writer = pd.ExcelWriter(report_file_name) 
+    pd_df.to_excel(writer) 
+    writer.close() 
+    mail_sender.send( files=[report_file_name], subject = "monthly_summary" ) 
