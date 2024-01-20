@@ -6,7 +6,7 @@ from dateutil.parser import parse
 import argparse 
 import pandas as pd
 import smtplib
-import smtplib
+
 from email.mime.text import MIMEText
 from email import encoders
 from email.mime.base import MIMEBase
