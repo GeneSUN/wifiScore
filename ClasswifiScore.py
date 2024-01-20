@@ -161,8 +161,10 @@ class wifiScore():
                         F.collect_set("dg_model").alias("dg_model"), 
                         F.collect_set("Rou_Ext").alias("Rou_Ext"), 
                     )\
-                    .withColumn("date", F.lit( ( datetime.strptime(self.date_str2,"%Y-%m-%d") - timedelta(1) ).strftime("%Y-%m-%d") )) 
-            
+                    .withColumn("date", F.lit( ( datetime.strptime(self.date_str2,"%Y-%m-%d") - timedelta(1) ).strftime("%Y-%m-%d") ))\
+                    .select( "*",F.explode("dg_model").alias("dg_model_mid") ).dropDuplicates()\
+                    .select( "*",F.explode("dg_model_mid").alias("dg_model_indiv") )\
+                    .drop("dg_model_mid")
         
     def filter_outlier(self, df = None, partition_columns = None, percentiles = None, column_name = None):
         if df is None:
