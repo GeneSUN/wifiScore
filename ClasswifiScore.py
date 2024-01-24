@@ -4,6 +4,9 @@ from pyspark.sql.functions import sum, concat_ws, col, split, concat_ws, lit ,ud
 from pyspark.sql.types import *
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
+import sys 
+sys.path.append('/usr/apps/vmas/script/ZS') 
+from MailSender import MailSender
 
 def flatten_df_v2(nested_df):
     # flat the nested columns and return as a new column
@@ -153,13 +156,19 @@ class wifiScore():
                                             (100 - col("poor_rssi")) * 0.4 + (100 - col("poor_phyrate")) * 0.6 
                                         )\
                                 .drop("dg_rowkey")
-        self.df_homeScore = self.df_deviceScore .groupBy("serial_num", "mdn", "cust_id")\
-                            .agg( 
-                                F.round(F.sum(col("poor_rssi") * col("weights")), 4).alias("poor_rssi"), 
-                                F.round(F.sum(col("poor_phyrate") * col("weights")), 4).alias("poor_phyrate"), 
-                                F.round(F.sum(col("device_score") * col("weights")), 4).alias("home_score") 
-                            )
-
+        self.df_homeScore = self.df_deviceScore.groupBy("serial_num", "mdn", "cust_id")\
+                    .agg(  
+                        F.round(F.sum(col("poor_rssi") * col("weights")), 4).alias("poor_rssi"),  
+                        F.round(F.sum(col("poor_phyrate") * col("weights")), 4).alias("poor_phyrate"),  
+                        F.round(F.sum(col("device_score") * col("weights")), 4).alias("home_score"), 
+                        F.collect_set("dg_model").alias("dg_model"), 
+                        F.collect_set("Rou_Ext").alias("Rou_Ext"), 
+                    )\
+                    .withColumn("date", F.lit( ( datetime.strptime(self.date_str2,"%Y-%m-%d") - timedelta(1) ).strftime("%Y-%m-%d") ))\
+                    .select( "*",F.explode("dg_model").alias("dg_model_mid") ).dropDuplicates()\
+                    .select( "*",F.explode("dg_model_mid").alias("dg_model_indiv") )\
+                    .drop("dg_model_mid")
+        
     def filter_outlier(self, df = None, partition_columns = None, percentiles = None, column_name = None):
         if df is None:
             df = self.df_stationHist 
@@ -334,35 +343,32 @@ if __name__ == "__main__":
     
     spark = SparkSession.builder\
             .master("spark://njbbepapa1.nss.vzwnet.com:7077") \
-            .appName('wifiScore_ZheS_Test')\
+            .appName('wifiScore_ZheS')\
             .config("spark.sql.adapative.enabled","true")\
             .enableHiveSupport().getOrCreate()
     #
     hdfs_pd = "hdfs://njbbvmaspd11.nss.vzwnet.com:9000/"
-    for i in [0]:
-        datetoday = date.today() - timedelta(i)
-
+    mail_sender = MailSender() 
+    datetoday = date.today() 
+    try:
         ins1 = wifiScore(  
                         sparksession = spark,
                         day = datetoday
                         )
-        """
 
-        """
         df_deviceScore = ins1.df_deviceScore
         df_deviceScore = round_columns(df_deviceScore,["avg_phyrate","poor_phyrate","poor_rssi","device_score"], 2)
         df_deviceScore = round_columns(df_deviceScore,["weights"], 4)
-        #
-        #df_deviceScore.repartition(100)\
+
         df_deviceScore.dropDuplicates()\
+                .repartition(100)\
                 .write.mode("overwrite")\
                 .parquet( hdfs_pd + "/user/ZheS/wifi_score_v2/deviceScore_dataframe/" + (datetoday - timedelta(1)).strftime("%Y-%m-%d") )
                 
-        #ins1.df_homeScore.repartition(100)\
-        ins1.df_homeScore\
+        ins1.df_homeScore.repartition(10)\
                 .write.mode("overwrite")\
                 .parquet( hdfs_pd + "/user/ZheS/wifi_score_v2/homeScore_dataframe/" + (datetoday- timedelta(1)).strftime("%Y-%m-%d") )
-        
+            
 
-
-    
+    except Exception as e:
+        mail_sender.send(text = e, subject="wifiScore_ZheS failed")
