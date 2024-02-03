@@ -167,7 +167,8 @@ class wifiScore():
                     .withColumn("date", F.lit( ( datetime.strptime(self.date_str2,"%Y-%m-%d") - timedelta(1) ).strftime("%Y-%m-%d") ))\
                     .select( "*",F.explode("dg_model").alias("dg_model_mid") ).dropDuplicates()\
                     .select( "*",F.explode("dg_model_mid").alias("dg_model_indiv") )\
-                    .drop("dg_model_mid")
+                    .drop("dg_model_mid")\
+                    .dropDuplicates()
         
     def filter_outlier(self, df = None, partition_columns = None, percentiles = None, column_name = None):
         if df is None:
@@ -327,6 +328,7 @@ class wifiScore():
                         .withColumn("Rou_Ext",when( col("parent_mac").isNotNull(),1 ).otherwise(0) )
     
         group_id = ["dg_rowkey", "serial_num", "mdn", "cust_id", "rowkey", "rk_row_sn", "station_mac"] 
+        #group_id = ["serial_num", "mdn", "cust_id", "rowkey", "rk_row_sn", "station_mac"] 
         rou_ext = ["RouExt_mac", "dg_model", "parent_mac", "firmware", "parent_id", "Rou_Ext"] 
         features = ["avg_phyrate", "poor_phyrate", "stationarity", "weights", "poor_rssi"] 
         
@@ -350,6 +352,7 @@ if __name__ == "__main__":
     hdfs_pd = "hdfs://njbbvmaspd11.nss.vzwnet.com:9000/"
     mail_sender = MailSender() 
     datetoday = date.today() 
+    #datetoday = date(2024,1,22)
     try:
         ins1 = wifiScore(  
                         sparksession = spark,
