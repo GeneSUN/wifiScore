@@ -50,7 +50,7 @@ class extenders_json():
             
         ) -> None:
         self.spark = sparksession
-        self.install_extender_date = install_extender_date # e.g. 10
+        self.install_extender_date = install_extender_date # e.g. date(2023, 10, 1)
         self.window_range = window_range # e.g. 30
 
         self.before_extender_date = self.install_extender_date - timedelta( self.window_range )
@@ -80,18 +80,46 @@ class extenders_json():
                         
         # 2. join before extender features and after extender features (exclude install extender month)
         after_range = [ ( after_extender_date + timedelta(i) ).strftime('%Y-%m-%d') for i in range(date_window) ]
-        after_install_features = self.month_agg_serial(after_range, df_extender)\
-                                .select( "serial_num", col("score").alias("target_score") )
+        after_install_features = self.agg_device(after_range, df_extender)\
+                                .select( "serial_num", col("score").alias("target_avg_device_score") )
         
         before_range = [ ( before_extender_date + timedelta(i) ).strftime('%Y-%m-%d') for i in range(date_window) ]
-        before_install_features = self.month_agg_serial(before_range,  df_extender)
-        
-        df_ext_bef_aft = before_install_features.join(after_install_features, "serial_num" )\
+        before_install_features = self.agg_device(before_range,  df_extender)\
+                                        .withColumnRenamed("score","avg_device_score")
+
+        before_install_homescore = self.agg_home(before_range,  df_extender).withColumnRenamed("home_score","before_home_score")
+        after_install_homescore = self.agg_home(after_range,  df_extender).withColumnRenamed("home_score","after_home_score")
+
+        df_ext_bef_aft = before_install_features.join(before_install_homescore, "serial_num" )\
+                                                .join(after_install_features, "serial_num" )\
+                                                .join(after_install_homescore, "serial_num" )
         
         return df_ext_bef_aft
+    
+    def agg_home(self,  date_range, df_extender, file_path_pattern = None, columns_to_agg = None,  id_columns = None ):   
+        if file_path_pattern is None:
+            file_path_pattern = hdfs_pd + "user/maggie/wifi_score_v2.1/wifiScore_daily{}.json"
+        if columns_to_agg is None:
+            columns_to_agg = ["home_score"] 
+        if id_columns is None:
+            id_columns = ["serial_num","home_score"]
         
+        df_list = [] 
+        for d in date_range: 
+            file_path = file_path_pattern.format( d )
+            try:
+                df_kpis = spark.read.json(file_path).select(id_columns).join( broadcast(df_extender), "serial_num" )
+                df_list.append(df_kpis)
+                print(file_path)
+            except Exception as e:
+                print(e)   
         
-    def month_agg_serial(self, date_range, df_extender, file_path_pattern = None, columns_to_agg = None,  id_columns = None):
+        home_ext = reduce(lambda df1, df2: df1.unionAll(df2), df_list)
+        result_df = home_ext.groupBy("serial_num").agg( avg("home_score").alias("home_score"))
+        
+        return result_df
+        
+    def agg_device(self, date_range, df_extender, file_path_pattern = None, columns_to_agg = None,  id_columns = None):
         if file_path_pattern is None:
             file_path_pattern = self.device_path
         if columns_to_agg is None:
@@ -147,19 +175,23 @@ if __name__ == "__main__":
     hdfs_pd = 'hdfs://njbbvmaspd11.nss.vzwnet.com:9000/'
 
     #--------------------------------------------------------------------------------
-    d = date(2023, 10, 1)
+    start_d = date(2023, 10, 1)
+    window_range = 30
     #--------------------------------------------------------------------------------
-    inst1 = extenders_json( sparksession = spark, install_extender_date = d, window_range = 7)
-    inst1.df_ext_bef_aft.show()
+    for i in range(0,30,window_range):
+        d = start_d + timedelta(i)
+        print(d)
+        inst1 = extenders_json( sparksession = spark, install_extender_date = d, window_range = window_range)
+        #inst1.df_ext_bef_aft.show()
 
-    output_path = (
-                    hdfs_pd + "/user/ZheS/wifi_score_v2/training_dataset/" + \
-                    f"{inst1.before_extender_date.strftime('%Y-%m-%d')  }_" +\
-                    f"{inst1.install_extender_date.strftime('%Y-%m-%d')  }_" +\
-                    f"{inst1.after_extender_date.strftime('%Y-%m-%d')  }_" +\
-                    f"window_range_{inst1.window_range}"
-                    )
-    print(output_path)
+        output_path = (
+                        hdfs_pd + "/user/ZheS/wifi_score_v2/training_dataset/" + \
+                        f"{inst1.before_extender_date.strftime('%Y-%m-%d')  }_" +\
+                        f"{inst1.install_extender_date.strftime('%Y-%m-%d')  }_" +\
+                        f"{inst1.after_extender_date.strftime('%Y-%m-%d')  }_" +\
+                        f"window_range_{inst1.window_range}"
+                        )
+        inst1.df_ext_bef_aft.write.mode("overwrite").parquet(output_path)
 
 
 
