@@ -38,8 +38,7 @@ def process_json_files_for_date_range(date_range, file_path_pattern):
     result_df = reduce(lambda df1, df2: df1.union(df2), df_list) 
 
     return result_df 
-
-
+    
 class router_json():
     global hdfs_pd
     hdfs_pd = "hdfs://njbbvmaspd11.nss.vzwnet.com:9000/"
@@ -56,7 +55,7 @@ class router_json():
         
         self.device_path = hdfs_pd + "user/maggie/temp1.1/wifiScore_detail{}.json"
         self.before_extender_date = self.install_extender_date - timedelta( self.window_range )
-        self.df = self.get_router_bef()
+        self.df_rou_features = self.get_router_bef()
 
     def get_router_bef(self, before_extender_date = None, date_window = None):
         
@@ -110,8 +109,17 @@ if __name__ == "__main__":
                         .config("spark.sql.adapative.enabled","true")\
                         .getOrCreate()
     hdfs_pd = 'hdfs://njbbvmaspd11.nss.vzwnet.com:9000/'
-   
-    router_json( sparksession = spark, install_extender_date = date(2023, 10, 1), window_range = 3).df.show()
+
+    inst1 = router_json( sparksession = spark, install_extender_date = date(2023, 10, 1), window_range = 3)
+
+    output_path = (
+                hdfs_pd + "/user/ZheS/wifi_score_v2/training_dataset/" + \
+                f"router_{inst1.install_extender_date.strftime('%Y-%m-%d')  }_" +\
+                f"window_range_{inst1.window_range}"
+                )
+    
+
+    inst1.df_rou_features.write.mode("overwrite").parquet(output_path)
 
 
 
