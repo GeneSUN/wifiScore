@@ -110,7 +110,7 @@ if __name__ == "__main__":
                         .getOrCreate()
     hdfs_pd = 'hdfs://njbbvmaspd11.nss.vzwnet.com:9000/'
 
-    inst1 = router_json( sparksession = spark, install_extender_date = date(2023, 10, 1), window_range = 3)
+    inst1 = router_json( sparksession = spark, install_extender_date = date(2023, 10, 1), window_range = 7)
 
     output_path = (
                 hdfs_pd + "/user/ZheS/wifi_score_v2/training_dataset/" + \
