@@ -327,8 +327,8 @@ class wifiScore():
         df_mac =  dfdg.join(df_all,cond,"right")\
                         .withColumn("Rou_Ext",when( col("parent_mac").isNotNull(),1 ).otherwise(0) )
     
-        group_id = ["dg_rowkey", "serial_num", "mdn", "cust_id", "rowkey", "rk_row_sn", "station_mac"] 
-        #group_id = ["serial_num", "mdn", "cust_id", "rowkey", "rk_row_sn", "station_mac"] 
+        #group_id = ["dg_rowkey", "serial_num", "mdn", "cust_id", "rowkey", "rk_row_sn", "station_mac"] 
+        group_id = ["serial_num", "mdn", "cust_id", "rowkey", "rk_row_sn", "station_mac"] 
         rou_ext = ["RouExt_mac", "dg_model", "parent_mac", "firmware", "parent_id", "Rou_Ext"] 
         features = ["avg_phyrate", "poor_phyrate", "stationarity", "weights", "poor_rssi"] 
         
@@ -352,7 +352,8 @@ if __name__ == "__main__":
     hdfs_pd = "hdfs://njbbvmaspd11.nss.vzwnet.com:9000/"
     mail_sender = MailSender() 
     datetoday = date.today() 
-    #datetoday = date(2024,1,22)
+    #datetoday = date(2024,1,27)
+
     try:
         ins1 = wifiScore(  
                         sparksession = spark,
