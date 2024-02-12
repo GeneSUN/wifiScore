@@ -118,7 +118,6 @@ def round_columns(df,numeric_columns = None, decimal_places=4):
 class wifiScore():
     global hdfs_pd, station_history_path, device_groups_path,serial_mdn_custid, device_ids
     hdfs_pd = "hdfs://njbbvmaspd11.nss.vzwnet.com:9000/"
-    station_history_path = hdfs_pd + "/usr/apps/vmas/sha_data/bhrx_hourly_data/StationHistory/"
     device_groups_path = hdfs_pd + "/usr/apps/vmas/sha_data/bhrx_hourly_data/DeviceGroups/"
     serial_mdn_custid = hdfs_pd + "/usr/apps/vmas/5g_data/fixed_5g_router_mac_sn_mapping/{}/fixed_5g_router_mac_sn_mapping.csv"
     device_ids = ["rowkey","rk_row_sn","serial_num","station_mac"]
@@ -131,10 +130,10 @@ class wifiScore():
         self.spark = sparksession
         self.date_str1 = day.strftime("%Y%m%d") # e.g. 20231223
         self.date_str2 = day.strftime("%Y-%m-%d") # e.g. 2023-12-23
-
         self.df_stationHist = df_stationHist
 
         self.stationarity = self.filter_outlier()
+        
         self.parent_id = self.df_stationHist.select( device_ids + ["parent_id"]).distinct()
 
         self.df_rssi = self.get_rssi_dataframe()
@@ -148,6 +147,7 @@ class wifiScore():
                                             (100 - col("poor_rssi")) * 0.5 + (100 - col("poor_phyrate")) * 0.5
                                         )\
                                 .drop("dg_rowkey")
+        
         self.df_homeScore = self.df_deviceScore.groupBy("serial_num", "mdn", "cust_id")\
                     .agg(  
                         F.round(F.sum(col("poor_rssi") * col("weights")), 4).alias("poor_rssi"),  
@@ -161,7 +161,7 @@ class wifiScore():
                     .select( "*",F.explode("dg_model_mid").alias("dg_model_indiv") )\
                     .drop("dg_model_mid")\
                     .dropDuplicates()
-        
+                    
     def filter_outlier(self, df = None, partition_columns = None, percentiles = None, column_name = None):
         if df is None:
             df = self.df_stationHist 
@@ -204,7 +204,7 @@ class wifiScore():
         condition_cat1 = (col("sdcd_connect_type") == "2.") & (col("sdcd_signal_strength") < -78) 
         condition_cat2 = (col("sdcd_connect_type") == "5G") & (col("sdcd_signal_strength") < -75) 
         condition_cat3 = (col("sdcd_connect_type") == "6G") & (col("sdcd_signal_strength") < -70) 
-    
+        
         total_volume_window = Window.partitionBy("serial_num") 
         
         df_rssi = ( 
@@ -222,7 +222,9 @@ class wifiScore():
                 .withColumn("weights", F.col("volume") / F.col("total_volume") ) 
                 .withColumn("poor_rssi", (col("count_cat1") + col("count_cat2") + col("count_cat3"))/col("total_count") *100 )
                 .filter(col("total_count")>=36)
+                .join( self.stationarity, ["rowkey","rk_row_sn","serial_num","station_mac"], "inner")
             ) 
+            
         return df_rssi
         
     def get_phyrate_dataframe(self, df_stationHist = None):
@@ -241,7 +243,6 @@ class wifiScore():
                                 )\
                             .withColumn("poor_phyrate", col("poor_count")/col("total_count")*100 )
         return df_phy
-        
 
     def add_info(self, df_phy_rssi = None, date_str1 = None, date_str2 = None):
         if df_phy_rssi is None:
@@ -287,11 +288,10 @@ class wifiScore():
         df_mac =  dfdg.join(df_all,cond,"right")\
                         .withColumn("Rou_Ext",when( col("parent_mac").isNotNull(),1 ).otherwise(0) )
     
-        #group_id = ["dg_rowkey", "serial_num", "mdn", "cust_id", "rowkey", "rk_row_sn", "station_mac"] 
-        group_id = ["serial_num", "mdn", "cust_id", "rowkey", "rk_row_sn", "station_mac"] 
+        group_id = [ "serial_num", "mdn", "cust_id", "rowkey", "rk_row_sn", "station_mac"] 
         rou_ext = ["RouExt_mac", "dg_model", "parent_mac", "firmware", "parent_id", "Rou_Ext"] 
-        #features = ["avg_phyrate", "poor_phyrate", "stationarity", "weights", "poor_rssi"] 
-        features = ["avg_phyrate", "poor_phyrate", "weights", "poor_rssi"] 
+        features = ["avg_phyrate", "poor_phyrate", "stationarity","volume", "weights", "poor_rssi"] 
+        #features = ["avg_phyrate", "poor_phyrate", "weights", "poor_rssi"] 
         
         aggregation_exprs = [F.avg(col(feature)).alias(feature) for feature in features] + \
                             [F.collect_set(col(col_name)).alias(col_name) for col_name in rou_ext]
