@@ -38,7 +38,8 @@ def process_json_files_for_date_range(date_range, file_path_pattern):
     df_list = list(filter(None, df_list)) 
     result_df = reduce(lambda df1, df2: df1.union(df2), df_list) 
 
-    return result_df 
+    return result_df
+
 class extenders_json():
     global hdfs_pd
     hdfs_pd = "hdfs://njbbvmaspd11.nss.vzwnet.com:9000/"
@@ -163,7 +164,7 @@ class extenders_json():
         result_df = union_df.groupBy("serial_num").agg( F.max("Rou_Ext").alias("Rou_Ext") )
         
         return result_df
-        
+    
 
         
     
