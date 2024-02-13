@@ -76,18 +76,6 @@ def get_Home(dfsh):
                     .withColumnRenamed("rk_sn_row","serial_num")
     return dfsh_out
 
-def get_rssi(dfsh):
-    # get all rowkey_related, station_mac, parent id, rssi --> new table
-    dfsh_out = dfsh.select("rowkey"
-                            ,"serial_num"
-                            ,"rk_row_sn"
-                            ,"rk_row"
-                            ,"station_mac"
-                            ,"parent_id"
-                            ,"sdcd_signal_strength"
-                            ,"sdcd_connect_type").dropna(subset="sdcd_signal_strength")
-    return dfsh_out
-
 def get_phyrate(dfsh):
     # get all rowkey_related, station_mac, parent id, phy_rate --> new table
     dfsh_out = dfsh.filter((dfsh.sdcd_tx_link_rate>6)
