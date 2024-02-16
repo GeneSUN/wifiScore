@@ -5,8 +5,8 @@ from pyspark.sql.types import *
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 import sys 
-#sys.path.append('/usr/apps/vmas/script/ZS') 
-#from MailSender import MailSender
+sys.path.append('/usr/apps/vmas/script/ZS') 
+from MailSender import MailSender
 
 def flatten_df_v2(nested_df):
     # flat the nested columns and return as a new column
@@ -217,7 +217,7 @@ class wifiScore():
                     sum("byte_send").alias("byte_send"),
                     sum("byte_received").alias("byte_received")
                 ) 
-                .withColumn("volume",col("byte_send")+col("byte_received") )
+                .withColumn("volume",F.log( col("byte_send")+col("byte_received") ))
                 .withColumn("total_volume", F.sum("volume").over(total_volume_window)) 
                 .withColumn("weights", F.col("volume") / F.col("total_volume") ) 
                 .withColumn("poor_rssi", (col("count_cat1") + col("count_cat2") + col("count_cat3"))/col("total_count") *100 )
@@ -312,9 +312,9 @@ if __name__ == "__main__":
 
     try:
         hdfs_pd = "hdfs://njbbvmaspd11.nss.vzwnet.com:9000/"
-        #mail_sender = MailSender() 
+        mail_sender = MailSender() 
         datetoday = date.today() 
-        datetoday = date(2024,2,9)
+        #datetoday = date(2024,2,9)
         date_str1 = datetoday.strftime("%Y%m%d") # e.g. 20231223
         station_history_path = hdfs_pd + "/usr/apps/vmas/sha_data/bhrx_hourly_data/StationHistory/"
         df_stationHist = spark.read.parquet( station_history_path + date_str1 )\
@@ -327,22 +327,22 @@ if __name__ == "__main__":
                         day = datetoday,
                         df_stationHist = df_stationHist
                         )
-        ins1.df_deviceScore.show()
+        #ins1.df_deviceScore.show()
         df_deviceScore = ins1.df_deviceScore
-        df_deviceScore = round_columns(df_deviceScore,["avg_phyrate","poor_phyrate","poor_rssi","device_score"], 2)
+        df_deviceScore = round_columns(df_deviceScore,["avg_phyrate","poor_phyrate","poor_rssi","device_score","volume"], 2)
         df_deviceScore = round_columns(df_deviceScore,["weights"], 4)
-        df_deviceScore.show()
+        #df_deviceScore.show()
 
         df_deviceScore.dropDuplicates()\
                 .repartition(100)\
                 .write.mode("overwrite")\
-                .parquet( hdfs_pd + "/user/ZheS/wifi_score_v3/deviceScore_dataframe/" + (datetoday - timedelta(1)).strftime("%Y-%m-%d") )
+                .parquet( hdfs_pd + "/user/ZheS/wifi_score_v3/deviceScore_dataframe/" +"volume"+ (datetoday - timedelta(1)).strftime("%Y-%m-%d") )
                 
         ins1.df_homeScore.repartition(10)\
                 .write.mode("overwrite")\
-                .parquet( hdfs_pd + "/user/ZheS/wifi_score_v3/homeScore_dataframe/" + (datetoday- timedelta(1)).strftime("%Y-%m-%d") )
+                .parquet( hdfs_pd + "/user/ZheS/wifi_score_v3/homeScore_dataframe/"+"volume" + (datetoday- timedelta(1)).strftime("%Y-%m-%d") )
 
     except Exception as e:
         print(e)
 
-        #mail_sender.send(text = e, subject="wifiScore_ZheS failed")
+        mail_sender.send(text = e, subject="wifiScore_ZheS failed")
