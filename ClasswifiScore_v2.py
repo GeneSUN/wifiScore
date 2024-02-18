@@ -217,11 +217,11 @@ class wifiScore():
                     sum("byte_send").alias("byte_send"),
                     sum("byte_received").alias("byte_received")
                 ) 
+                .filter(col("total_count")>=36)
                 .withColumn("volume",F.log( col("byte_send")+col("byte_received") ))
                 .withColumn("total_volume", F.sum("volume").over(total_volume_window)) 
                 .withColumn("weights", F.col("volume") / F.col("total_volume") ) 
                 .withColumn("poor_rssi", (col("count_cat1") + col("count_cat2") + col("count_cat3"))/col("total_count") *100 )
-                .filter(col("total_count")>=36)
                 .join( self.stationarity, ["rowkey","rk_row_sn","serial_num","station_mac"], "inner")
             ) 
             
@@ -334,13 +334,15 @@ if __name__ == "__main__":
         #df_deviceScore.show()
 
         df_deviceScore.dropDuplicates()\
+                .withColumn("date", F.lit((datetoday - timedelta(1)).strftime('%Y-%m-%d')))\
                 .repartition(100)\
                 .write.mode("overwrite")\
-                .parquet( hdfs_pd + "/user/ZheS/wifi_score_v3/deviceScore_dataframe/" +"volume"+ (datetoday - timedelta(1)).strftime("%Y-%m-%d") )
+                .parquet( hdfs_pd + "/user/ZheS/wifi_score_v3/deviceScore_dataframe/" + (datetoday - timedelta(1)).strftime("%Y-%m-%d") )
                 
         ins1.df_homeScore.repartition(10)\
+                .withColumn("date", F.lit((datetoday - timedelta(1)).strftime('%Y-%m-%d')))\
                 .write.mode("overwrite")\
-                .parquet( hdfs_pd + "/user/ZheS/wifi_score_v3/homeScore_dataframe/"+"volume" + (datetoday- timedelta(1)).strftime("%Y-%m-%d") )
+                .parquet( hdfs_pd + "/user/ZheS/wifi_score_v3/homeScore_dataframe/"+ (datetoday- timedelta(1)).strftime("%Y-%m-%d") )
 
     except Exception as e:
         print(e)
