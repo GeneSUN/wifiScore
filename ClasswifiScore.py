@@ -145,7 +145,8 @@ class wifiScore():
                                         )\
                                 .drop("dg_rowkey")
         self.df_homeScore = self.df_deviceScore.groupBy("serial_num", "mdn", "cust_id")\
-                    .agg(  
+                    .agg(
+                        count("*").alias("num_station"),    
                         F.round(F.sum(col("poor_rssi") * col("weights")), 4).alias("poor_rssi"),  
                         F.round(F.sum(col("poor_phyrate") * col("weights")), 4).alias("poor_phyrate"),  
                         F.round(F.sum(col("device_score") * col("weights")), 4).alias("home_score"), 
@@ -353,11 +354,13 @@ if __name__ == "__main__":
         df_deviceScore = round_columns(df_deviceScore,["weights"], 4)
 
         df_deviceScore.dropDuplicates()\
+                .withColumn("date", F.lit((datetoday - timedelta(1)).strftime('%Y-%m-%d')))\
                 .repartition(100)\
                 .write.mode("overwrite")\
                 .parquet( hdfs_pd + "/user/ZheS/wifi_score_v2/deviceScore_dataframe/" + (datetoday - timedelta(1)).strftime("%Y-%m-%d") )
                 
         ins1.df_homeScore.repartition(10)\
+                .withColumn("date", F.lit((datetoday - timedelta(1)).strftime('%Y-%m-%d')))\
                 .write.mode("overwrite")\
                 .parquet( hdfs_pd + "/user/ZheS/wifi_score_v2/homeScore_dataframe/" + (datetoday- timedelta(1)).strftime("%Y-%m-%d") )
             

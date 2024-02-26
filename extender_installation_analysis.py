@@ -101,7 +101,7 @@ class extenders_parquet():
         home_ext = reduce(lambda df1, df2: df1.unionAll(df2), df_list)
         result_df = home_ext.groupBy("serial_num").agg( avg("home_score").alias("home_score"))
         
-        return result_df
+        return round_numeric_columns(result_df, decimal_places= 4, numeric_columns = ["home_score"] )
         
     def agg_device(self, date_range, df_extender, file_path_pattern = None, columns_to_agg = None,  id_columns = None):
         if file_path_pattern is None:
@@ -127,17 +127,20 @@ class extenders_parquet():
                             for col in columns_to_agg if col != "device_score"] 
     
         result_df = Extenders.groupBy("serial_num")\
-                                    .agg(*average_columns, 
-                                            *median_columns, 
-                                            collect_list("device_score").alias("device_scores_list"),
-                                            F.count("*").alias("count")) 
+                            .agg(*average_columns, 
+                                    *median_columns, 
+                                    collect_list("device_score").alias("device_scores_list"),
+                                    F.count("*").alias("count")) 
         #------------------------------------------------------------------------
-        @udf(FloatType())
-        def get_lowest_top_3(scores_list): 
-            numbers_list = sorted(scores_list)[:3] 
-            return float( np.sum(numbers_list) / len(numbers_list) )
-
-        result_df = result_df.withColumn("lowest_3_scores", get_lowest_top_3("device_scores_list"))\
+        def get_lowest_n_udf(low_n): 
+            @udf(FloatType())
+            def get_lowest_n(scores_list): 
+                numbers_list = sorted(scores_list)[:low_n]
+                return float( np.sum(numbers_list) / len(numbers_list) )
+            return get_lowest_n
+        low_n = 5
+        current_udf = get_lowest_n_udf(low_n) 
+        result_df = result_df.withColumn(f"lowest_n_scores", current_udf("device_scores_list"))\
                                 .drop("device_scores_list")
         #------------------------------------------------------------------------
         numeric_columns = [e for e in result_df.columns if e != "serial_num"]
@@ -167,13 +170,13 @@ class extenders_parquet():
         after_install_features = self.agg_device(after_range, df_extender)\
                                         .select( "serial_num", 
                                                 col("device_score").alias("target_avg_device_score"),
-                                                col("lowest_3_scores").alias("target_lowest_3_scores"),
+                                                col("lowest_n_scores").alias("target_lowest_n_scores"),
                                                 )
         
         before_range = [ ( before_extender_date + timedelta(i) ).strftime('%Y-%m-%d') for i in range(date_window) ]
         before_install_features = self.agg_device(before_range,  df_extender)\
                                         .withColumnRenamed("device_score","avg_device_score")\
-                                        .withColumnRenamed("lowest_3_scores","before_lowest_3_scores")\
+                                        .withColumnRenamed("lowest_n_scores","before_lowest_n_scores")\
                                         
 
         before_install_homescore = self.agg_home(before_range,  df_extender).withColumnRenamed("home_score","before_home_score")
@@ -218,15 +221,14 @@ if __name__ == "__main__":
                 f"window_range_{inst_v3.window_range}"
                 )
     inst_v3.df_ext_bef_aft.write.mode("overwrite").parquet(output_path)
-    """
 
     inst_v2 = extenders_parquet( sparksession = spark, 
-                            install_extender_date = d, 
-                            window_range = window_range,
-                            columns_to_agg = ["avg_phyrate", "poor_phyrate", "poor_rssi", "device_score", "weights",'stationarity'], 
-                            device_path = hdfs_pd + "/user/ZheS/wifi_score_v2/deviceScore_dataframe/{}",
-                            home_path = hdfs_pd + "/user/ZheS/wifi_score_v2/homeScore_dataframe/{}"
-                            )
+                        install_extender_date = d, 
+                        window_range = window_range,
+                        columns_to_agg = ["avg_phyrate", "poor_phyrate", "poor_rssi", "device_score", "weights",'stationarity'], 
+                        device_path = hdfs_pd + "/user/ZheS/wifi_score_v2/deviceScore_dataframe/{}",
+                        home_path = hdfs_pd + "/user/ZheS/wifi_score_v2/homeScore_dataframe/{}"
+                        )
     output_path = (
                     hdfs_pd + "/user/ZheS/wifi_score_v2/training_dataset/" + \
                     f"{inst_v2.before_extender_date.strftime('%Y-%m-%d')  }_" +\
@@ -235,6 +237,9 @@ if __name__ == "__main__":
                     f"window_range_{inst_v2.window_range}"
                     )
     inst_v2.df_ext_bef_aft.write.mode("overwrite").parquet(output_path)
+    """
+
+
 
 
     """
