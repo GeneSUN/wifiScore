@@ -150,6 +150,7 @@ class wifiScore():
         
         self.df_homeScore = self.df_deviceScore.groupBy("serial_num", "mdn", "cust_id")\
                     .agg(  
+                        count("*").alias("num_station"),    
                         F.round(F.sum(col("poor_rssi") * col("weights")), 4).alias("poor_rssi"),  
                         F.round(F.sum(col("poor_phyrate") * col("weights")), 4).alias("poor_phyrate"),  
                         F.round(F.sum(col("device_score") * col("weights")), 4).alias("home_score"), 
