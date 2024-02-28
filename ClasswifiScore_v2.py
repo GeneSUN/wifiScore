@@ -140,13 +140,16 @@ class wifiScore():
         self.df_phy = self.get_phyrate_dataframe()
         self.df_phy_rssi = self.df_phy.drop('poor_count', 'total_count')\
                                     .join( self.df_rssi.drop('count_cat1', 'count_cat2', 'count_cat3', 'total_count'), 
-                                            device_ids)
+                                            device_ids)\
+                                    .withColumn( 
+                                                "weights", 
+                                                when( 
+                                                    (col("avg_phyrate") < 20.718) & (col("stationarity") == 1), 
+                                                    col("weights") * col("avg_phyrate") / 20.718 
+                                                ).otherwise(col("weights")) 
+                                                ) 
         self.df_all_features = self.add_info()
-        self.df_deviceScore = self.df_all_features.withColumn( 
-                                            "device_score", 
-                                            (100 - col("poor_rssi")) * 0.5 + (100 - col("poor_phyrate")) * 0.5
-                                        )\
-                                .drop("dg_rowkey")
+        self.df_deviceScore = self.create_deviceScore()
         
         self.df_homeScore = self.df_deviceScore.groupBy("serial_num", "mdn", "cust_id")\
                     .agg(  
@@ -162,7 +165,22 @@ class wifiScore():
                     .select( "*",F.explode("dg_model_mid").alias("dg_model_indiv") )\
                     .drop("dg_model_mid")\
                     .dropDuplicates()
-                    
+    
+    def create_deviceScore(self,df_all_features = None):
+        if df_all_features is None:
+            df_all_features = self.df_all_features
+
+        windowSpec = Window.partitionBy('serial_num') 
+        sum_weights = F.sum('weights').over(windowSpec) 
+
+        df_deviceScore = df_all_features.withColumn( 
+                                                    "device_score", 
+                                                    (100 - col("poor_rssi")) * 0.5 + (100 - col("poor_phyrate")) * 0.5
+                                                )\
+                                        .withColumn('weights', F.col('weights') / sum_weights)\
+                                        .drop("dg_rowkey")
+        return df_deviceScore
+     
     def filter_outlier(self, df = None, partition_columns = None, percentiles = None, column_name = None):
         if df is None:
             df = self.df_stationHist 
@@ -214,6 +232,11 @@ class wifiScore():
                     sum(when(condition_cat1, 1).otherwise(0)).alias("count_cat1"), 
                     sum(when(condition_cat2, 1).otherwise(0)).alias("count_cat2"), 
                     sum( when(condition_cat3, 1).otherwise(0) ).alias("count_cat3"), 
+                    # Calculate the average signal strength for each condition 
+                    F.avg(F.when((col("sdcd_connect_type") == "2."), F.col("sdcd_signal_strength")).otherwise(None)).alias("avg_sig_strength_cat1"), 
+                    F.avg(F.when((col("sdcd_connect_type") == "5G"), F.col("sdcd_signal_strength")).otherwise(None)).alias("avg_sig_strength_cat2"), 
+                    F.avg(F.when((col("sdcd_connect_type") == "6G"), F.col("sdcd_signal_strength")).otherwise(None)).alias("avg_sig_strength_cat3"),        
+                    
                     count("*").alias("total_count"),
                     sum("byte_send").alias("byte_send"),
                     sum("byte_received").alias("byte_received")
@@ -291,7 +314,8 @@ class wifiScore():
     
         group_id = [ "serial_num", "mdn", "cust_id", "rowkey", "rk_row_sn", "station_mac"] 
         rou_ext = ["RouExt_mac", "dg_model", "parent_mac", "firmware", "parent_id", "Rou_Ext"] 
-        features = ["avg_phyrate", "poor_phyrate", "stationarity","volume", "weights", "poor_rssi"] 
+        features = ["avg_phyrate", "poor_phyrate", "stationarity","volume", "weights", "poor_rssi", 
+                    "avg_sig_strength_cat1","avg_sig_strength_cat2","avg_sig_strength_cat3"] 
         #features = ["avg_phyrate", "poor_phyrate", "weights", "poor_rssi"] 
         
         aggregation_exprs = [F.avg(col(feature)).alias(feature) for feature in features] + \
