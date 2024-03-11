@@ -103,19 +103,18 @@ class extenders_parquet():
         
         return round_numeric_columns(result_df, decimal_places= 4, numeric_columns = ["home_score"] )
         
-    def agg_device(self, date_range, df_extender, file_path_pattern = None, columns_to_agg = None,  id_columns = None):
+    def agg_device(self, date_range, df_extender, file_path_pattern = None, columns_to_agg = None,  feature_columns = None):
         if file_path_pattern is None:
             file_path_pattern = self.device_path
         if columns_to_agg is None:
-            columns_to_agg = self.columns_to_agg
-            # columns_to_agg = ["avg_phyrate", "poor_phyrate", "poor_rssi", "device_score", "weights",'stationarity',"volume"] 
-        if id_columns is None:
-            id_columns = columns_to_agg + ['Rou_Ext', 'cust_id', 'date', 'dg_model', 'firmware', 'mdn', 'rk_row_sn', 'rowkey',  'serial_num', 'station_mac']
+            columns_to_agg = self.columns_to_agg 
+        if feature_columns is None:
+            feature_columns = columns_to_agg + ['Rou_Ext', 'cust_id', 'date', 'dg_model', 'firmware', 'mdn', 'rk_row_sn', 'rowkey',  'serial_num', 'station_mac']
         df_list = [] 
         for d in date_range: 
             file_path = file_path_pattern.format( d )
             try:
-                df_kpis = spark.read.parquet(file_path).select(id_columns)
+                df_kpis = spark.read.parquet(file_path).select(feature_columns)
                 df_list.append(df_kpis)
                 #print(file_path)
             except Exception as e:
@@ -199,8 +198,8 @@ if __name__ == "__main__":
     hdfs_pd = 'hdfs://njbbvmaspd11.nss.vzwnet.com:9000/'
 
     #--------------------------------------------------------------------------------
-    start_d = date(2024, 2, 16)
-    window_range = 2
+    start_d = date(2024, 2, 18)
+    window_range = 4
     #--------------------------------------------------------------------------------
     #for i in range(0,30,window_range):
     d = start_d #+ timedelta(i)
@@ -208,7 +207,8 @@ if __name__ == "__main__":
     inst_v3 = extenders_parquet( sparksession = spark, 
                             install_extender_date = d, 
                             window_range = window_range,
-                            columns_to_agg = ["avg_phyrate", "poor_phyrate", "poor_rssi", "device_score", "weights",'stationarity',"volume"], 
+                            columns_to_agg = ["avg_phyrate", "poor_phyrate", "poor_rssi", "device_score", "weights",'stationarity',"volume",
+                                              'avg_sig_strength_cat1', 'avg_sig_strength_cat2', 'avg_sig_strength_cat3'], 
                             device_path = hdfs_pd + "/user/ZheS/wifi_score_v3/deviceScore_dataframe/{}",
                             home_path = hdfs_pd + "/user/ZheS/wifi_score_v3/homeScore_dataframe/{}"
                             )
@@ -221,6 +221,9 @@ if __name__ == "__main__":
                 f"window_range_{inst_v3.window_range}"
                 )
     inst_v3.df_ext_bef_aft.write.mode("overwrite").parquet(output_path)
+
+
+    """
 
     inst_v2 = extenders_parquet( sparksession = spark, 
                         install_extender_date = d, 
@@ -237,9 +240,6 @@ if __name__ == "__main__":
                     f"window_range_{inst_v2.window_range}"
                     )
     inst_v2.df_ext_bef_aft.write.mode("overwrite").parquet(output_path)
-    """
-
-
 
 
     """
