@@ -364,7 +364,8 @@ if __name__ == "__main__":
                 .write.mode("overwrite")\
                 .parquet( hdfs_pd + "/user/ZheS/wifi_score_v3/deviceScore_dataframe/" + (datetoday - timedelta(1)).strftime("%Y-%m-%d") )
                 
-        ins1.df_homeScore.repartition(10)\
+        ins1.df_homeScore.dropDuplicates()\
+                .repartition(10)\
                 .withColumn("date", F.lit((datetoday - timedelta(1)).strftime('%Y-%m-%d')))\
                 .write.mode("overwrite")\
                 .parquet( hdfs_pd + "/user/ZheS/wifi_score_v3/homeScore_dataframe/"+ (datetoday- timedelta(1)).strftime("%Y-%m-%d") )
