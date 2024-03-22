@@ -170,7 +170,7 @@ class wifiScore():
         if df_all_features is None:
             df_all_features = self.df_all_features
 
-        windowSpec = Window.partitionBy('serial_num') 
+        windowSpec = Window.partitionBy('serial_num',"mdn","cust_id") 
         sum_weights = F.sum('weights').over(windowSpec) 
 
         df_deviceScore = df_all_features.withColumn( 
@@ -284,6 +284,7 @@ class wifiScore():
                 #p = hdfs_pd +"/usr/apps/vmas/5g_data/fixed_5g_router_mac_sn_mapping/{}/fixed_5g_router_mac_sn_mapping.csv".format(d)
                 p = serial_mdn_custid.format(d)
                 df_join = self.spark.read.option("header","true").csv(p)\
+                            .filter(col('status')=="INSTALL COMPLETE" )\
                             .select( col("mdn_5g").alias("mdn"),
                                     col("serialnumber").alias("serial_num"),
                                     "cust_id"
