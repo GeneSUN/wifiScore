@@ -129,6 +129,7 @@ class extenders_parquet():
                             .agg(*average_columns, 
                                     *median_columns, 
                                     collect_list("device_score").alias("device_scores_list"),
+                                    F.sum(exp(col("volume")) ).alias("total_volume"),
                                     F.count("*").alias("count")) 
         #------------------------------------------------------------------------
         def get_lowest_n_udf(low_n): 
@@ -175,7 +176,7 @@ class extenders_parquet():
         before_range = [ ( before_extender_date + timedelta(i) ).strftime('%Y-%m-%d') for i in range(date_window) ]
         before_install_features = self.agg_device(before_range,  df_extender)\
                                         .withColumnRenamed("device_score","avg_device_score")\
-                                        .withColumnRenamed("lowest_n_scores","before_lowest_n_scores")\
+                                        .withColumnRenamed("lowest_n_scores","before_lowest_n_scores")
                                         
 
         before_install_homescore = self.agg_home(before_range,  df_extender).withColumnRenamed("home_score","before_home_score")
@@ -186,7 +187,20 @@ class extenders_parquet():
                                                 .join(after_install_homescore, "serial_num" )
         
         return df_ext_bef_aft
-        
+    def add_modelName(self):
+        # it does not matter what date of dg_model_indiv, because device is constant
+        start_d = self.install_extender_date 
+        routers = ["G3100","CR1000A","XCI55AX","ASK-NCQ1338FA","CR1000B","CR1000B","WNC-CR200A","ASK-NCQ1338","FSNO21VA","ASK-NCQ1338E"]
+        other_routers = ["FWA55V5L","FWF100V5L","ASK-NCM1100E","ASK-NCM1100"]
+        df_deviceModel = spark.read.parquet( hdfs_pd + f"/user/ZheS/wifi_score_v2/homeScore_dataframe/{start_d}" )\
+                        .filter(col("dg_model_indiv").isin(routers + other_routers))\
+                        .withColumn("dg_model_indiv", 
+                                       when(col("dg_model_indiv").isin(other_routers), "others")
+                                       .otherwise(col("dg_model_indiv")))\
+                        .select("serial_num",
+                                "dg_model_indiv",
+                                "home_score"
+                                )
 
         
     
@@ -198,17 +212,20 @@ if __name__ == "__main__":
     hdfs_pd = 'hdfs://njbbvmaspd11.nss.vzwnet.com:9000/'
 
     #--------------------------------------------------------------------------------
-    start_d = date(2024, 2, 18)
-    window_range = 4
+    start_d = date(2024, 2, 21)
+    window_range = 7
     #--------------------------------------------------------------------------------
     #for i in range(0,30,window_range):
     d = start_d #+ timedelta(i)
-    print(d)
+    
+    columns_to_agg = ["avg_phyrate", "poor_phyrate", "poor_rssi", "device_score", "weights",'stationarity',"volume",
+                                              'avg_sig_strength_cat1', 'avg_sig_strength_cat2', 'avg_sig_strength_cat3']
+    columns_to_agg = ["avg_phyrate", "poor_phyrate", "poor_rssi", "device_score", "weights",'stationarity',"volume"]
+    
     inst_v3 = extenders_parquet( sparksession = spark, 
                             install_extender_date = d, 
                             window_range = window_range,
-                            columns_to_agg = ["avg_phyrate", "poor_phyrate", "poor_rssi", "device_score", "weights",'stationarity',"volume",
-                                              'avg_sig_strength_cat1', 'avg_sig_strength_cat2', 'avg_sig_strength_cat3'], 
+                            columns_to_agg = columns_to_agg, 
                             device_path = hdfs_pd + "/user/ZheS/wifi_score_v3/deviceScore_dataframe/{}",
                             home_path = hdfs_pd + "/user/ZheS/wifi_score_v3/homeScore_dataframe/{}"
                             )
