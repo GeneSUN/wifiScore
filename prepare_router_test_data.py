@@ -69,11 +69,17 @@ class router_parquet():
         if id_columns is None:
             id_columns = ["serial_num","home_score"]
         
+        routers = ["G3100","CR1000A","XCI55AX","ASK-NCQ1338FA","CR1000B","CR1000B","WNC-CR200A","ASK-NCQ1338","FSNO21VA","ASK-NCQ1338E"]
+        other_routers = ["FWA55V5L","FWF100V5L","ASK-NCM1100E","ASK-NCM1100"]
+        extender = ["E3200","CE1000A","CME1000"]
+
         df_list = [] 
         for d in date_range: 
             file_path = file_path_pattern.format( d )
             try:
-                df_kpis = spark.read.parquet(file_path).select(id_columns)
+                df_kpis = spark.read.parquet(file_path).select(id_columns)\
+                                .filter(col("dg_model_indiv").isin(routers + other_routers))
+                
                 df_list.append(df_kpis)
                 print(file_path)
             except Exception as e:
