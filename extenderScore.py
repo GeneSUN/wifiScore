@@ -126,4 +126,5 @@ if __name__ == "__main__":
     df_join = spark.createDataFrame( pandas_extenderScore[["serial_num","extender_score"]] )
     df_extenderScore = df_pop.join( df_join, "serial_num")
 
-    df_extenderScore.write.mode("overwrite").parquet(hdfs_pd + "/user/ZheS/wifi_score_v3/extenderScore_dataframe/" + date_string)
+    df_extenderScore.withColumn("extender_score",F.round("extender_score",4 ))\
+                .write.mode("overwrite").parquet(hdfs_pd + "/user/ZheS/wifi_score_v3/extenderScore_dataframe/" + date_string)
