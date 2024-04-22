@@ -288,6 +288,7 @@ class wifiScore():
                 #p = hdfs_pd +"/usr/apps/vmas/5g_data/fixed_5g_router_mac_sn_mapping/{}/fixed_5g_router_mac_sn_mapping.csv".format(d)
                 p = serial_mdn_custid.format(d)
                 df_join = self.spark.read.option("header","true").csv(p)\
+                            .filter(col('status')=="INSTALL COMPLETE" )\
                             .select( col("mdn_5g").alias("mdn"),
                                     col("serialnumber").alias("serial_num"),
                                     "cust_id"
