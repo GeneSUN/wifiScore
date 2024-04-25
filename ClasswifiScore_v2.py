@@ -165,21 +165,6 @@ class wifiScore():
                     .select( "*",F.explode("dg_model_mid").alias("dg_model_indiv") )\
                     .drop("dg_model_mid")\
                     .dropDuplicates()
-    
-    def create_deviceScore(self,df_all_features = None):
-        if df_all_features is None:
-            df_all_features = self.df_all_features
-
-        windowSpec = Window.partitionBy('serial_num',"mdn","cust_id") 
-        sum_weights = F.sum('weights').over(windowSpec) 
-
-        df_deviceScore = df_all_features.withColumn( 
-                                                    "device_score", 
-                                                    (100 - col("poor_rssi")) * 0.5 + (100 - col("poor_phyrate")) * 0.5
-                                                )\
-                                        .withColumn('weights', F.col('weights') / sum_weights)\
-                                        .drop("dg_rowkey")
-        return df_deviceScore
      
     def filter_outlier(self, df = None, partition_columns = None, percentiles = None, column_name = None):
         if df is None:
@@ -326,7 +311,20 @@ class wifiScore():
         
         return result_df
             
+    def create_deviceScore(self,df_all_features = None):
+        if df_all_features is None:
+            df_all_features = self.df_all_features
 
+        windowSpec = Window.partitionBy('serial_num',"mdn","cust_id") 
+        sum_weights = F.sum('weights').over(windowSpec) 
+
+        df_deviceScore = df_all_features.withColumn( 
+                                                    "device_score", 
+                                                    (100 - col("poor_rssi")) * 0.5 + (100 - col("poor_phyrate")) * 0.5
+                                                )\
+                                        .withColumn('weights', F.col('weights') / sum_weights)\
+                                        .drop("dg_rowkey")
+        return df_deviceScore
         
 if __name__ == "__main__":
     
