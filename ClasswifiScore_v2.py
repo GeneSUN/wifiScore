@@ -8,6 +8,23 @@ import sys
 sys.path.append('/usr/apps/vmas/script/ZS') 
 from MailSender import MailSender
 import argparse 
+
+import subprocess
+def check_hdfs_files(path, filename):
+    # check if file exist
+    ls_proc = subprocess.Popen(['/usr/apps/vmas/hadoop-3.3.6/bin/hdfs', 'dfs', '-du', path], stdout=subprocess.PIPE)
+
+    ls_proc.wait()
+    # check return code
+    ls_lines = ls_proc.stdout.readlines()
+    all_files = []
+    for i in range(len(ls_lines)):
+        all_files.append(ls_lines[i].split()[-1].decode('utf-8').split('/')[-1])
+
+    if filename in all_files:
+        return True
+    return False
+
 def flatten_df_v2(nested_df):
     # flat the nested columns and return as a new column
     flat_cols = [c[0] for c in nested_df.dtypes if c[1][:6] != 'struct']
@@ -334,49 +351,60 @@ if __name__ == "__main__":
             .appName('wifiScore_v3_ZheS')\
             .config("spark.sql.adapative.enabled","true")\
             .getOrCreate()
-    #
+    
+    hdfs_pd = "hdfs://njbbvmaspd11.nss.vzwnet.com:9000/"
+    mail_sender = MailSender() 
+    parser = argparse.ArgumentParser(description="Inputs") 
+    parser.add_argument("--date", default=(date.today() - timedelta(0) ).strftime("%Y-%m-%d")) 
+    args = parser.parse_args()
+    datetoday_str = args.date 
+    datetoday_val = datetime.strptime( datetoday_str, "%Y-%m-%d" ).date() #datetoday = date(2024,6,3)
 
-    try:
-        hdfs_pd = "hdfs://njbbvmaspd11.nss.vzwnet.com:9000/"
-        mail_sender = MailSender() 
-        parser = argparse.ArgumentParser(description="Inputs") 
-        parser.add_argument("--date", default=(date.today() - timedelta(0) ).strftime("%Y-%m-%d")) 
-        args = parser.parse_args()
-        date_str = args.date
-        datetoday = datetime.strptime( date_str, "%Y-%m-%d" ).date() 
-        #datetoday = date.today() 
-        #datetoday = date(2024,2,9)
-        date_str1 = datetoday.strftime("%Y%m%d") # e.g. 20231223
-        station_history_path = hdfs_pd + "/usr/apps/vmas/sha_data/bhrx_hourly_data/StationHistory/"
-        df_stationHist = spark.read.parquet( station_history_path + date_str1 )\
-                            .transform(flatten_df_v2)\
-                            .transform(SH_process)\
-                            .transform(get_Home)
+    d_range = [( datetoday_val - timedelta(days=day)).strftime("%Y-%m-%d") for day in range(1,10)]  
+    
+    for d_before_str in d_range:
+        # d_before_str is used to check the existence of hdfs file, if exist, jump to next for-loop
+        if check_hdfs_files(hdfs_pd + f'/user/ZheS/wifi_score_v3/deviceScore_dataframe/', d_before_str):
+            print(f'6x6 data for {d_before_str} already exists')
+            continue
+        else:
+            print('Start to process data for ' + d_before_str )
 
-        ins1 = wifiScore(  
-                        sparksession = spark,
-                        day = datetoday,
-                        df_stationHist = df_stationHist
-                        )
-        #ins1.df_deviceScore.show()
-        df_deviceScore = ins1.df_deviceScore
-        df_deviceScore = round_columns(df_deviceScore,["avg_phyrate","poor_phyrate","poor_rssi","device_score","volume"], 2)
-        df_deviceScore = round_columns(df_deviceScore,["weights"], 4)
-        #df_deviceScore.show()
+        # datetoday is used for StationHistory file
+        datetoday = datetime.strptime( d_before_str, "%Y-%m-%d" ).date() + timedelta(days=1)
+        try:
 
-        df_deviceScore.dropDuplicates()\
-                .withColumn("date", F.lit((datetoday - timedelta(1)).strftime('%Y-%m-%d')))\
-                .repartition(100)\
-                .write.mode("overwrite")\
-                .parquet( hdfs_pd + "/user/ZheS/wifi_score_v3/deviceScore_dataframe/" + (datetoday - timedelta(1)).strftime("%Y-%m-%d") )
-                
-        ins1.df_homeScore.dropDuplicates()\
-                .repartition(10)\
-                .withColumn("date", F.lit((datetoday - timedelta(1)).strftime('%Y-%m-%d')))\
-                .write.mode("overwrite")\
-                .parquet( hdfs_pd + "/user/ZheS/wifi_score_v3/homeScore_dataframe/"+ (datetoday- timedelta(1)).strftime("%Y-%m-%d") )
+            date_str1 = datetoday.strftime("%Y%m%d") # e.g. 20231223
+            station_history_path = hdfs_pd + "/usr/apps/vmas/sha_data/bhrx_hourly_data/StationHistory/"
+            df_stationHist = spark.read.parquet( station_history_path + date_str1 )\
+                                .transform(flatten_df_v2)\
+                                .transform(SH_process)\
+                                .transform(get_Home)
 
-    except Exception as e:
-        print(e)
+            ins1 = wifiScore(  
+                            sparksession = spark,
+                            day = datetoday,
+                            df_stationHist = df_stationHist
+                            )
+            #ins1.df_deviceScore.show()
+            df_deviceScore = ins1.df_deviceScore
+            df_deviceScore = round_columns(df_deviceScore,["avg_phyrate","poor_phyrate","poor_rssi","device_score","volume"], 2)
+            df_deviceScore = round_columns(df_deviceScore,["weights"], 4)
+            #df_deviceScore.show()
 
-        mail_sender.send(text = e, subject="wifiScore_ZheS failed")
+            df_deviceScore.dropDuplicates()\
+                    .withColumn("date", F.lit((datetoday - timedelta(1)).strftime('%Y-%m-%d')))\
+                    .repartition(100)\
+                    .write.mode("overwrite")\
+                    .parquet( hdfs_pd + "/user/ZheS/wifi_score_v3/deviceScore_dataframe/" + (datetoday - timedelta(1)).strftime("%Y-%m-%d") )
+                    
+            ins1.df_homeScore.dropDuplicates()\
+                    .repartition(10)\
+                    .withColumn("date", F.lit((datetoday - timedelta(1)).strftime('%Y-%m-%d')))\
+                    .write.mode("overwrite")\
+                    .parquet( hdfs_pd + "/user/ZheS/wifi_score_v3/homeScore_dataframe/"+ (datetoday- timedelta(1)).strftime("%Y-%m-%d") )
+
+        except Exception as e:
+            print(e)
+
+            mail_sender.send(text = e, subject="wifiScore_ZheS failed")
