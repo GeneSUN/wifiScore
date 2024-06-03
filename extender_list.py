@@ -7,10 +7,26 @@ from dateutil.relativedelta import relativedelta
 import numpy as np
 from dateutil.parser import parse
 import argparse 
-
+import subprocess
 from functools import reduce 
 import sys
+sys.path.append('/usr/apps/vmas/script/ZS/SNAP') 
+from MailSender import MailSender
 
+def check_hdfs_files(path, filename):
+    # check if file exist
+    ls_proc = subprocess.Popen(['/usr/apps/vmas/hadoop-3.3.6/bin/hdfs', 'dfs', '-du', path], stdout=subprocess.PIPE)
+
+    ls_proc.wait()
+    # check return code
+    ls_lines = ls_proc.stdout.readlines()
+    all_files = []
+    for i in range(len(ls_lines)):
+        all_files.append(ls_lines[i].split()[-1].decode('utf-8').split('/')[-1])
+
+    if filename in all_files:
+        return True
+    return False
 def round_numeric_columns(df, decimal_places=2, numeric_columns = None): 
 
     if numeric_columns == None:
@@ -122,42 +138,27 @@ def agg_home( date_range, df_extender, modelLabel = True, file_path_pattern = No
 if __name__ == "__main__":
     
     spark = SparkSession.builder\
-            .appName('testScript_ZheS')\
+            .appName('extender_list_ZheS')\
             .config("spark.sql.adapative.enabled","true")\
             .getOrCreate()
     #
     hdfs_pd = "hdfs://njbbvmaspd11.nss.vzwnet.com:9000/"
-    start_date = date.today() - timedelta(8)
-    try:
+
+    parser = argparse.ArgumentParser(description="Inputs") 
+    parser.add_argument("--date", default=(date.today()).strftime("%Y-%m-%d")) 
+    args = parser.parse_args()
+    date_today:str= args.date
+    d_range = [(datetime.strptime(date_today, "%Y-%m-%d") - timedelta(days=day)) for day in range(10)]  
+    
+    for date_val in d_range:
+        start_date = date_val - timedelta(8)
+        date_str = (start_date).strftime("%Y-%m-%d")
+        if check_hdfs_files(hdfs_pd + "/user/ZheS/wifi_score_v3/installExtenders/", date_str):
+            print(f'6x6 data for {date_str} already exists')
+            continue
+        else:
+            print('Start to process data for ' + date_str)
         
-        # inner join [previous only one router family] with [after with more than just one router/extender]
-        before_dates = [ (start_date - timedelta(i+1) ).strftime('%Y-%m-%d') for i in range(7)]  #exclude start date
-        before_dfs = map(lambda date: before_extender(date), before_dates) 
-        df_before = reduce(lambda df1, df2: df1.join(df2, "serial_num"), before_dfs) 
-
-        after_dates = [ ( start_date + timedelta(i) ).strftime('%Y-%m-%d') for i in range(8)]  # include start date
-        after_dfs = map(lambda date: after_extender(date), after_dates) 
-        df_after = reduce(lambda df1, df2: df1.join(df2, "serial_num"), after_dfs) 
-
-        df_extenderList = df_after.join( df_before, "serial_num" )
-
-        df_before_feature = agg_device(before_dates, df_extenderList )
-        df_before_home_score = agg_home(before_dates, df_extenderList ).withColumnRenamed("home_score", "before_home_score")
-
-        df_after_home_score = agg_home(after_dates[1:], df_extenderList, False ).withColumnRenamed("home_score", "after_home_score")
-
-        df_before_feature.join(df_before_home_score,"serial_num")\
-                        .join(df_after_home_score,"serial_num")\
-                        .withColumn("date_string", lit(start_date.strftime('%Y-%m-%d')))\
-                        .write.mode("overwrite")\
-                        .parquet( hdfs_pd + "/user/ZheS/wifi_score_v3/installExtenders/" + (start_date).strftime("%Y-%m-%d") )
-
-    except Exception as e:
-        print(start_date, e)
-    sys.exit()
-    start_date = date(2024, 3, 22) 
-    while start_date < date.today() - timedelta(7):
-
         try:
             
             # inner join [previous only one router family] with [after with more than just one router/extender]
@@ -184,5 +185,3 @@ if __name__ == "__main__":
 
         except Exception as e:
             print(start_date, e)
-        
-        start_date = start_date + timedelta(1)
