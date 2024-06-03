@@ -7,7 +7,7 @@ from pyspark.sql import functions as F
 import sys 
 sys.path.append('/usr/apps/vmas/script/ZS') 
 from MailSender import MailSender
-
+import argparse 
 def flatten_df_v2(nested_df):
     # flat the nested columns and return as a new column
     flat_cols = [c[0] for c in nested_df.dtypes if c[1][:6] != 'struct']
@@ -165,6 +165,21 @@ class wifiScore():
                     .select( "*",F.explode("dg_model_mid").alias("dg_model_indiv") )\
                     .drop("dg_model_mid")\
                     .dropDuplicates()
+    
+    def create_deviceScore(self,df_all_features = None):
+        if df_all_features is None:
+            df_all_features = self.df_all_features
+
+        windowSpec = Window.partitionBy('serial_num',"mdn","cust_id") 
+        sum_weights = F.sum('weights').over(windowSpec) 
+
+        df_deviceScore = df_all_features.withColumn( 
+                                                    "device_score", 
+                                                    (100 - col("poor_rssi")) * 0.5 + (100 - col("poor_phyrate")) * 0.5
+                                                )\
+                                        .withColumn('weights', F.col('weights') / sum_weights)\
+                                        .drop("dg_rowkey")
+        return df_deviceScore
      
     def filter_outlier(self, df = None, partition_columns = None, percentiles = None, column_name = None):
         if df is None:
@@ -311,25 +326,12 @@ class wifiScore():
         
         return result_df
             
-    def create_deviceScore(self,df_all_features = None):
-        if df_all_features is None:
-            df_all_features = self.df_all_features
 
-        windowSpec = Window.partitionBy('serial_num',"mdn","cust_id") 
-        sum_weights = F.sum('weights').over(windowSpec) 
-
-        df_deviceScore = df_all_features.withColumn( 
-                                                    "device_score", 
-                                                    (100 - col("poor_rssi")) * 0.5 + (100 - col("poor_phyrate")) * 0.5
-                                                )\
-                                        .withColumn('weights', F.col('weights') / sum_weights)\
-                                        .drop("dg_rowkey")
-        return df_deviceScore
         
 if __name__ == "__main__":
     
     spark = SparkSession.builder\
-            .appName('wifiScore_ZheS')\
+            .appName('wifiScore_v3_ZheS')\
             .config("spark.sql.adapative.enabled","true")\
             .getOrCreate()
     #
@@ -337,7 +339,12 @@ if __name__ == "__main__":
     try:
         hdfs_pd = "hdfs://njbbvmaspd11.nss.vzwnet.com:9000/"
         mail_sender = MailSender() 
-        datetoday = date.today() 
+        parser = argparse.ArgumentParser(description="Inputs") 
+        parser.add_argument("--date", default=(date.today() - timedelta(0) ).strftime("%Y-%m-%d")) 
+        args = parser.parse_args()
+        date_str = args.date
+        datetoday = datetime.strptime( date_str, "%Y-%m-%d" ).date() 
+        #datetoday = date.today() 
         #datetoday = date(2024,2,9)
         date_str1 = datetoday.strftime("%Y%m%d") # e.g. 20231223
         station_history_path = hdfs_pd + "/usr/apps/vmas/sha_data/bhrx_hourly_data/StationHistory/"
