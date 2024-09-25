@@ -364,7 +364,7 @@ if __name__ == "__main__":
     
     for d_before_str in d_range:
         # d_before_str is used to check the existence of hdfs file, if exist, jump to next for-loop
-        if check_hdfs_files(hdfs_pd + f'/user/ZheS/wifi_score_v3/deviceScore_dataframe/', d_before_str):
+        if check_hdfs_files(hdfs_pd + f'/user/ZheS/wifi_score_v3/archive/', d_before_str) | check_hdfs_files(hdfs_pd + f'/user/ZheS/wifi_score_v3/homeScore_dataframe/', d_before_str):
             print(f'6x6 data for {d_before_str} already exists')
             continue
         else:
@@ -386,11 +386,10 @@ if __name__ == "__main__":
                             day = datetoday,
                             df_stationHist = df_stationHist
                             )
-            #ins1.df_deviceScore.show()
+
             df_deviceScore = ins1.df_deviceScore
             df_deviceScore = round_columns(df_deviceScore,["avg_phyrate","poor_phyrate","poor_rssi","device_score","volume"], 2)
             df_deviceScore = round_columns(df_deviceScore,["weights"], 4)
-            #df_deviceScore.show()
 
             df_deviceScore.dropDuplicates()\
                     .withColumn("date", F.lit((datetoday - timedelta(1)).strftime('%Y-%m-%d')))\
@@ -406,5 +405,4 @@ if __name__ == "__main__":
 
         except Exception as e:
             print(e)
-
             mail_sender.send(text = e, subject="wifiScore_ZheS failed")
